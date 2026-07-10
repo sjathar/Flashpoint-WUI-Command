@@ -1,0 +1,19 @@
+# Secrets & local env
+.streamlit/secrets.toml
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.cursor/
+*.swp
+
+# Streamlit
+.streamlit/machine_id*
