@@ -489,7 +489,7 @@ def player_join_url() -> str:
 
 def render_hero_image() -> None:
     if HERO_IMAGE.exists():
-        st.image(str(HERO_IMAGE), width=220)
+        st.image(str(HERO_IMAGE), width=440)
         st.caption("NASA Earth Observatory, 9 January 2025.")
 
 
