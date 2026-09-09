@@ -1,748 +1,436 @@
 """
-Flashpoint: WUI Command
-Synchronous multiplayer icebreaker for conference play.
+WUI Interactive
+Synchronous multiplayer icebreaker for AAAR 2026 (WUI smoke, impacts, communication).
 
-Routing:
-  /?role=moderator  → projector / control view
-  /?role=player     → mobile player view
+Local test (default SQLite, no network):
+  streamlit run app.py
+  Moderator:  http://localhost:8501/?role=moderator
+  Player:     http://localhost:8501/?role=player
 """
 
 from __future__ import annotations
 
 import io
-import math
 import os
-import uuid
-from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import qrcode
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
 from supabase import Client, create_client
+from supabase.lib.client_options import ClientOptions
+from wordcloud import WordCloud
+
+from wui_store import WuiLocalClient, get_wui_client
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:  # pragma: no cover
+    st_autorefresh = None
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
+SESSION_TITLE = "AAAR 2026: WUI Smoke Impacts"
+APP_NAME = "WUI Interactive"
+GAME3_PROMPT = "What is the single biggest bottleneck in managing WUI smoke impacts?"
+
+PHASE_TITLES = {
+    "lobby": "Lobby — Join the session",
+    "game1": "Game 1 — Before, During, After",
+    "game2": "Game 2 — Fact or Fiction",
+    "game3": "Game 3 — Bottlenecks",
+    "end": "Session close",
+}
+
+CONCEPTS = [
+    "Sensor Networks",
+    "Public Warnings",
+    "Health Studies",
+    "Prescribed Burns",
+    "Indoor Filtration",
+    "Defensible Space",
+    "Risk Communication",
+]
+
+GAME2_QUESTIONS: dict[int, str] = {
+    1: "Most homes lost in WUI fires ignite from wind-blown embers, not a wall of flame.",
+    2: "If you can see wildfire smoke outdoors, indoor air is already protected.",
+    3: "Prescribed fire always reduces smoke exposure for nearby communities.",
+    4: "Air-quality alerts typically reach every household in a WUI zone within 10 minutes.",
+    5: "Closing windows and running a portable HEPA filter can cut indoor smoke.",
+}
+
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+HERO_IMAGE = ASSETS_DIR / "la_wui_smoke_2025.jpg"
+NASA_LOGO = ASSETS_DIR / "nasa_logo.png"
+
+GAMES_AND_RULES = """
+### Games and Rules
+
+1. **Before / During / After** — Map **7** WUI tools to when they matter most. The room pattern can show whether people treat smoke as a **preparedness** problem, an **emergency-response** problem, or a **recovery and health** problem.
+
+2. **Fact or Fiction** — Vote on claims about WUI fire and smoke. The split can reveal which ideas are **shared knowledge** in the room and which are still **contested or misunderstood**.
+
+3. **Bottlenecks** — Up to **three** words or short phrases for the biggest bottleneck in managing WUI smoke impacts. The cloud can show whether the constraint is seen as **science**, **operations**, **communication**, or **policy**.
+"""
+
+GAME_RULES = {
+    "game1": """
+### Game 1 rules
+
+Map **7** WUI tools to when they matter most: **Before**, **During**, or **After**. One choice per tool. The pattern can show whether the room treats smoke as preparedness, emergency response, or recovery and health.
+""",
+    "game2": """
+### Game 2 rules
+
+One claim at a time. Tap **Fact** or **Fiction** once. The room split can show which ideas are shared knowledge and which are still contested.
+""",
+    "game3": """
+### Game 3 rules
+
+Enter up to **three** words or short phrases for the biggest bottleneck in managing WUI smoke impacts. The cloud can show whether the constraint is seen as science, operations, communication, or policy.
+""",
+}
+
 st.set_page_config(
-    page_title="Flashpoint: WUI Command",
+    page_title=APP_NAME,
     page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-COLS = ["A", "B", "C", "D", "E", "F", "G"]  # 7 columns
-ROWS = list(range(1, 9))  # 8 rows
-N_COLS, N_ROWS = 7, 8
 
-LAND_USE_COLORS = {
-    "Dense Forest": (34, 90, 40),
-    "Shrubland": (140, 180, 70),
-    "Suburban WUI": (220, 140, 40),
-    "Urban Center": (110, 110, 120),
-    "Reservoir": (40, 130, 200),
-}
-
-ACTION_LABELS = {
-    "do_nothing": "Do Nothing",
-    "mitigate_smoke": "Mitigate Smoke",
-    "harden_evacuate": "Harden/Evacuate",
-}
-
-ACTION_COSTS = {
-    "do_nothing": 0,
-    "mitigate_smoke": 2000,
-    "harden_evacuate": 5000,
-}
-
-# Pre-scripted hazards by round. Tile IDs under each polygon.
-# Lobby has none; rounds escalate west → east into the WUI.
-HAZARDS: dict[int, dict[str, Any]] = {
-    0: {
-        "phase": "lobby",
-        "weather": "Calm conditions. Awaiting ignition…",
-        "fire": [],
-        "smoke": [],
-    },
-    1: {
-        "phase": "round_1",
-        "weather": (
-            "Red Flag Warning — hot, dry west winds 15–20 mph. "
-            "Ignition in the western Dense Forest; light smoke drifting east."
-        ),
-        "fire": [
-            "A1", "A2", "A3",
-            "B1", "B2",
-        ],
-        "smoke": [
-            "B3", "B4",
-            "C1", "C2", "C3",
-            "D1", "D2",
-        ],
-    },
-    2: {
-        "phase": "round_2",
-        "weather": (
-            "Gusty SW winds 25 mph. Fire runs through shrubland; "
-            "dense smoke plume tracking into the Suburban WUI."
-        ),
-        "fire": [
-            "A1", "A2", "A3", "A4", "A5",
-            "B1", "B2", "B3", "B4",
-            "C2", "C3",
-        ],
-        "smoke": [
-            "C1", "C4", "C5",
-            "D1", "D2", "D3", "D4",
-            "E2", "E3",
-        ],
-    },
-    3: {
-        "phase": "round_3",
-        "weather": (
-            "Extreme fire weather. Ember cast into suburban neighborhoods; "
-            "heavy smoke blankets the urban fringe."
-        ),
-        "fire": [
-            "A1", "A2", "A3", "A4", "A5", "A6",
-            "B1", "B2", "B3", "B4", "B5",
-            "C1", "C2", "C3", "C4",
-            "D2", "D3",
-        ],
-        "smoke": [
-            "C5", "C6",
-            "D1", "D4", "D5",
-            "E1", "E2", "E3", "E4",
-            "F3", "F4",
-        ],
-    },
-}
+def inject_theme(role: str) -> None:
+    player_shell = ""
+    if role == "player":
+        player_shell = """
+        [data-testid="stAppViewContainer"] .main .block-container {
+            max-width: 480px;
+            padding-top: 1rem;
+            padding-bottom: 2.5rem;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        """
+    st.markdown(
+        f"""
+        <style>
+        html, body, [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewContainer"] .main,
+        [data-testid="stHeader"] {{
+            background-color: #FFFFFF !important;
+            color: #1A1A1A !important;
+            font-family: Arial, system-ui, sans-serif !important;
+            font-size: 22px !important;
+        }}
+        [data-testid="stSidebar"] {{
+            background-color: #F5F5F5 !important;
+        }}
+        [data-testid="stSidebar"] * {{
+            font-size: 20px !important;
+            font-family: Arial, system-ui, sans-serif !important;
+        }}
+        p, li, label, span, .stMarkdown, .stCaption, .stAlert, div[data-testid="stText"] {{
+            font-size: 22px !important;
+            line-height: 1.35 !important;
+            color: #1A1A1A !important;
+            font-family: Arial, system-ui, sans-serif !important;
+        }}
+        h1, .wui-title {{
+            font-family: Arial, system-ui, sans-serif !important;
+            font-size: 3rem !important;
+            font-weight: 800 !important;
+            color: #1A1A1A !important;
+            line-height: 1.15 !important;
+        }}
+        h2, h3 {{
+            font-family: Arial, system-ui, sans-serif !important;
+            font-size: 2.2rem !important;
+            font-weight: 800 !important;
+            color: #1A1A1A !important;
+        }}
+        .wui-kicker {{
+            color: #FF5722;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            font-size: 1.1rem !important;
+            margin-bottom: 0.2rem;
+        }}
+        .wui-title {{
+            margin: 0 0 0.25rem 0;
+        }}
+        .wui-subtitle {{
+            color: #424242;
+            font-size: 2.2rem !important;
+            font-weight: 700;
+            margin-bottom: 1.2rem;
+        }}
+        .wui-question {{
+            font-size: 2.4rem !important;
+            font-weight: 800;
+            line-height: 1.25;
+            color: #1A1A1A;
+            margin: 0 0 1rem 0;
+        }}
+        .wui-join-url {{
+            font-size: 1.6rem !important;
+            font-weight: 700;
+            word-break: break-all;
+            background: #F5F5F5;
+            border: 2px solid #FF5722;
+            padding: 0.8rem 1rem;
+            border-radius: 10px;
+        }}
+        .stButton > button, .stFormSubmitButton > button {{
+            font-weight: 800 !important;
+            font-size: 1.35rem !important;
+            min-height: 3.2rem;
+            border-radius: 12px;
+            font-family: Arial, system-ui, sans-serif !important;
+        }}
+        div[data-testid="stForm"] {{
+            background: #FAFAFA;
+            padding: 1rem 1.1rem 0.4rem 1.1rem;
+            border-radius: 12px;
+            border: 1px solid #E0E0E0;
+        }}
+        div[data-testid="stRadio"] label {{
+            font-size: 22px !important;
+        }}
+        {player_shell}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Supabase helpers
+# Backend
 # ---------------------------------------------------------------------------
 
-def get_supabase() -> Client:
-    """Create a Supabase client from secrets or environment variables."""
-    url = None
-    key = None
+Backend = Client | WuiLocalClient
+
+
+def _secret_or_env(*names: str) -> str | None:
+    for name in names:
+        try:
+            value = st.secrets.get(name)
+        except Exception:
+            value = None
+        if value:
+            return str(value).strip()
+        env = os.environ.get(name)
+        if env:
+            return env.strip()
+    return None
+
+
+def _flag(name: str, default: bool = False) -> bool:
+    raw: Any = None
+    found = False
     try:
-        url = st.secrets.get("SUPABASE_URL") or st.secrets.get("supabase", {}).get("url")
-        key = (
-            st.secrets.get("SUPABASE_KEY")
-            or st.secrets.get("SUPABASE_ANON_KEY")
-            or st.secrets.get("supabase", {}).get("key")
-        )
+        if name in st.secrets:
+            raw = st.secrets[name]
+            found = True
     except Exception:
         pass
+    if not found and name in os.environ:
+        raw = os.environ[name]
+        found = True
+    if not found:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
-    url = url or os.environ.get("SUPABASE_URL")
-    key = key or os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
 
-    if not url or not key:
-        st.error(
-            "Missing Supabase credentials. Set `SUPABASE_URL` and `SUPABASE_KEY` "
-            "in `.streamlit/secrets.toml` or as environment variables."
+def _mark_local_mode(reason: str) -> WuiLocalClient:
+    st.session_state["local_mode"] = True
+    st.session_state["local_mode_reason"] = reason
+    return get_wui_client()
+
+
+def get_backend() -> Backend:
+    if _flag("USE_LOCAL_DB", default=True):
+        return _mark_local_mode(
+            "Local play mode — no internet required. WUI Interactive data is stored on this computer."
         )
-        st.stop()
 
-    # Accept either project root URL or a pasted REST endpoint.
-    url = url.strip().rstrip("/")
+    url = _secret_or_env("SUPABASE_URL")
+    key = _secret_or_env("SUPABASE_KEY", "SUPABASE_ANON_KEY")
+    if not url:
+        try:
+            url = (st.secrets.get("supabase", {}) or {}).get("url")  # type: ignore[attr-defined]
+        except Exception:
+            url = None
+    if not key:
+        try:
+            key = (st.secrets.get("supabase", {}) or {}).get("key")  # type: ignore[attr-defined]
+        except Exception:
+            key = None
+    if not url or not key or "YOUR_" in str(url) or "YOUR_" in str(key):
+        return _mark_local_mode("Supabase credentials are missing; using local SQLite.")
+
+    url = str(url).strip().rstrip("/")
+    key = str(key).strip()
     for suffix in ("/rest/v1", "/rest/v1/"):
         if url.endswith(suffix.rstrip("/")):
             url = url[: -len(suffix.rstrip("/"))]
             break
 
-    if "YOUR_" in url or "YOUR_" in key:
-        st.error(
-            "Replace the placeholders in `.streamlit/secrets.toml` with your real "
-            "Supabase Project URL and anon key."
+    try:
+        client = create_client(
+            url,
+            key,
+            options=ClientOptions(postgrest_client_timeout=5),
         )
-        st.stop()
+        client.table("app_state").select("id").eq("id", 1).limit(1).execute()
+        st.session_state["local_mode"] = False
+        return client
+    except Exception as exc:
+        return _mark_local_mode(
+            f"Supabase unreachable ({type(exc).__name__}); using local SQLite."
+        )
 
-    return create_client(url, key)
 
-
-def _supabase_call(label: str, fn):
-    """Run a Supabase call and surface connection errors clearly in the UI."""
+def _db_call(label: str, fn):
     try:
         return fn()
     except Exception as exc:
         msg = str(exc)
-        st.error(f"Supabase error while {label}: `{type(exc).__name__}`")
+        st.error(f"Database error while {label}: `{type(exc).__name__}`")
         if "ProxyError" in type(exc).__name__ or "403" in msg:
             st.warning(
-                "Outbound requests to Supabase are being blocked by an HTTP proxy "
-                "(403 Forbidden). In the terminal where you launch Streamlit, try:\n\n"
-                "`unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy`\n\n"
-                "Then run `streamlit run app.py` again."
+                "Outbound requests to Supabase are being blocked by an HTTP proxy. "
+                "Unset HTTP_PROXY/HTTPS_PROXY and restart Streamlit, or keep USE_LOCAL_DB = true."
             )
         else:
             st.exception(exc)
         st.stop()
 
 
-@st.cache_data(ttl=2)
-def fetch_global_state(_sb: Client) -> dict[str, Any]:
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "on"}
+
+
+@st.cache_data(ttl=1)
+def fetch_app_state(_sb: Backend) -> dict[str, Any]:
     def _run():
-        return _sb.table("global_state").select("*").eq("id", 1).single().execute().data
+        return _sb.table("app_state").select("*").eq("id", 1).single().execute().data
 
-    return _supabase_call("loading global state", _run)
+    data = _db_call("loading app state", _run) or {}
+    return {
+        "current_phase": data.get("current_phase") or "lobby",
+        "active_question": int(data.get("active_question") or 1),
+        "results_open": _as_bool(data.get("results_open")),
+    }
 
 
-@st.cache_data(ttl=5)
-def fetch_grid(_sb: Client) -> list[dict[str, Any]]:
+@st.cache_data(ttl=1)
+def fetch_game1(_sb: Backend) -> list[dict[str, Any]]:
     def _run():
-        return _sb.table("grid").select("*").order("row_idx").order("col_idx").execute().data or []
+        return (
+            _sb.table("game1_mapper")
+            .select("concept, assigned_phase, player_name")
+            .execute()
+            .data
+            or []
+        )
 
-    return _supabase_call("loading the grid", _run)
+    return _db_call("loading Game 1 votes", _run)
 
 
-def fetch_player_count(sb: Client) -> int:
+@st.cache_data(ttl=1)
+def fetch_game2(_sb: Backend, question_id: int) -> list[dict[str, Any]]:
     def _run():
-        return sb.table("players").select("player_id", count="exact").execute().count or 0
-
-    return _supabase_call("counting players", _run)
-
-
-def fetch_player(sb: Client, player_id: str) -> dict[str, Any] | None:
-    res = (
-        sb.table("players")
-        .select("*, grid(land_use)")
-        .eq("player_id", player_id)
-        .limit(1)
-        .execute()
-    )
-    rows = res.data or []
-    return rows[0] if rows else None
-
-
-def clear_data_caches() -> None:
-    fetch_global_state.clear()
-    fetch_grid.clear()
-
-
-# ---------------------------------------------------------------------------
-# Fictional hexagonal board (Catan-style, no basemap)
-# ---------------------------------------------------------------------------
-
-def _hex_corners(cx: float, cy: float, size: float) -> list[tuple[float, float]]:
-    """Pointy-top hexagon vertices."""
-    return [
-        (
-            cx + size * math.sin(math.radians(60 * i)),
-            cy - size * math.cos(math.radians(60 * i)),
-        )
-        for i in range(6)
-    ]
-
-
-def _hex_center(col_idx: int, row_idx: int, size: float, origin_x: float, origin_y: float) -> tuple[float, float]:
-    """Odd-row horizontal offset layout (pointy-top)."""
-    w = math.sqrt(3) * size
-    h = 2 * size
-    x = origin_x + col_idx * w + (row_idx % 2) * (w / 2)
-    y = origin_y + row_idx * (h * 0.75)
-    return x, y
-
-
-def _load_font(size: int) -> ImageFont.ImageFont:
-    for name in (
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/Library/Fonts/Arial.ttf",
-        "DejaVuSans-Bold.ttf",
-        "DejaVuSans.ttf",
-    ):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-def _draw_land_icon(draw: ImageDraw.ImageDraw, land_use: str, cx: float, cy: float, size: float) -> None:
-    """Simple Catan-like pictograms inside each hex."""
-    s = size * 0.28
-
-    if land_use == "Dense Forest":
-        # Three pine trees
-        for dx, scale in ((-0.55, 0.85), (0.0, 1.0), (0.55, 0.8)):
-            tx, ty = cx + dx * s * 1.4, cy + 0.15 * s
-            h = s * 1.6 * scale
-            draw.polygon(
-                [(tx, ty - h), (tx - s * 0.55 * scale, ty + h * 0.15), (tx + s * 0.55 * scale, ty + h * 0.15)],
-                fill=(20, 60, 25),
-            )
-            draw.rectangle(
-                [tx - s * 0.1, ty + h * 0.1, tx + s * 0.1, ty + h * 0.55],
-                fill=(70, 45, 25),
-            )
-
-    elif land_use == "Shrubland":
-        for dx, dy, r in ((-0.5, 0.15, 0.45), (0.15, -0.2, 0.55), (0.55, 0.25, 0.4)):
-            bx, by = cx + dx * s * 1.3, cy + dy * s * 1.2
-            rr = s * r
-            draw.ellipse([bx - rr, by - rr * 0.7, bx + rr, by + rr * 0.7], fill=(90, 130, 40))
-
-    elif land_use == "Suburban WUI":
-        # Two small houses
-        for dx in (-0.55, 0.45):
-            hx, hy = cx + dx * s * 1.2, cy + 0.2 * s
-            body = [hx - s * 0.45, hy - s * 0.1, hx + s * 0.45, hy + s * 0.55]
-            draw.rectangle(body, fill=(245, 230, 200))
-            draw.polygon(
-                [
-                    (hx, hy - s * 0.65),
-                    (hx - s * 0.55, hy - s * 0.05),
-                    (hx + s * 0.55, hy - s * 0.05),
-                ],
-                fill=(160, 60, 40),
-            )
-
-    elif land_use == "Urban Center":
-        # Skyline blocks
-        for dx, h_frac in ((-0.7, 0.9), (-0.15, 1.25), (0.4, 0.75)):
-            bx = cx + dx * s
-            top = cy - h_frac * s
-            bot = cy + 0.55 * s
-            draw.rectangle([bx - s * 0.28, top, bx + s * 0.28, bot], fill=(55, 55, 65))
-            # windows
-            for wy in (0.2, 0.45, 0.7):
-                yy = top + (bot - top) * wy
-                draw.rectangle([bx - s * 0.12, yy - s * 0.08, bx + s * 0.12, yy + s * 0.08], fill=(220, 210, 120))
-
-    elif land_use == "Reservoir":
-        # Concentric wave arcs
-        for i, r in enumerate((0.35, 0.55, 0.75)):
-            rr = s * r * 1.4
-            y0 = cy - rr * 0.15 + i * s * 0.08
-            draw.arc(
-                [cx - rr, y0 - rr * 0.35, cx + rr, y0 + rr * 0.55],
-                start=200,
-                end=340,
-                fill=(200, 230, 255),
-                width=max(2, int(size * 0.04)),
-            )
-
-
-def _blend_hex(
-    base: Image.Image,
-    overlay_rgba: tuple[int, int, int, int],
-    corners: list[tuple[float, float]],
-) -> None:
-    """Paint a translucent hex overlay onto the board."""
-    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
-    d.polygon(corners, fill=overlay_rgba)
-    base.alpha_composite(layer)
-
-
-def _draw_hatch(
-    draw: ImageDraw.ImageDraw,
-    cx: float,
-    cy: float,
-    size: float,
-    color: tuple[int, int, int, int],
-    angle_deg: float = 45,
-) -> None:
-    """Diagonal hatch clipped roughly to the hex interior."""
-    step = max(6, int(size * 0.18))
-    half = size * 0.85
-    rad = math.radians(angle_deg)
-    dx, dy = math.cos(rad), math.sin(rad)
-    px, py = -dy, dx  # perpendicular
-    for i in range(-8, 9):
-        ox = cx + px * i * step
-        oy = cy + py * i * step
-        draw.line(
-            [
-                (ox - dx * half, oy - dy * half),
-                (ox + dx * half, oy + dy * half),
-            ],
-            fill=color,
-            width=max(2, int(size * 0.045)),
+        return (
+            _sb.table("game2_trivia")
+            .select("question_id, vote, player_name")
+            .eq("question_id", question_id)
+            .execute()
+            .data
+            or []
         )
 
-
-def _draw_smoke_marker(draw: ImageDraw.ImageDraw, cx: float, cy: float, size: float) -> None:
-    """Grey cloud puffs + dashed ring — readable at projector distance."""
-    # Soft wash is applied separately; this is the icon language.
-    for dx, dy, r in ((-0.35, -0.35, 0.32), (0.05, -0.5, 0.38), (0.4, -0.28, 0.3)):
-        bx, by = cx + dx * size * 0.55, cy + dy * size * 0.45
-        rr = size * r
-        draw.ellipse(
-            [bx - rr, by - rr * 0.75, bx + rr, by + rr * 0.75],
-            fill=(210, 210, 215, 210),
-            outline=(90, 90, 100, 230),
-            width=max(1, int(size * 0.03)),
-        )
-    # Badge
-    bw = size * 0.55
-    bh = size * 0.28
-    bx0, by0 = cx - bw / 2, cy - size * 0.72
-    draw.rounded_rectangle(
-        [bx0, by0, bx0 + bw, by0 + bh],
-        radius=8,
-        fill=(55, 55, 60, 230),
-        outline=(220, 220, 225, 255),
-        width=2,
-    )
-    font = _load_font(max(11, int(size * 0.22)))
-    label = "SMOKE"
-    bbox = draw.textbbox((0, 0), label, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    draw.text((cx - tw / 2, by0 + (bh - th) / 2 - 1), label, fill=(240, 240, 245), font=font)
+    return _db_call("loading Game 2 votes", _run)
 
 
-def _draw_fire_marker(draw: ImageDraw.ImageDraw, cx: float, cy: float, size: float) -> None:
-    """Bold flame cluster + FIRE badge."""
-    for dx, scale, color in (
-        (-0.28, 0.85, (255, 140, 30, 230)),
-        (0.0, 1.1, (255, 70, 20, 240)),
-        (0.3, 0.9, (255, 190, 50, 230)),
-    ):
-        fx = cx + dx * size * 0.55
-        top = cy - size * 0.55 * scale
-        mid = cy - size * 0.05
-        base_y = cy + size * 0.2
-        draw.polygon(
-            [
-                (fx, top),
-                (fx - size * 0.18 * scale, mid),
-                (fx - size * 0.08 * scale, base_y),
-                (fx + size * 0.08 * scale, base_y),
-                (fx + size * 0.18 * scale, mid),
-            ],
-            fill=color,
-        )
-        # Hot core
-        draw.polygon(
-            [
-                (fx, top + size * 0.18 * scale),
-                (fx - size * 0.07 * scale, mid),
-                (fx + size * 0.07 * scale, mid),
-            ],
-            fill=(255, 240, 160, 230),
+@st.cache_data(ttl=1)
+def fetch_game2_all(_sb: Backend) -> list[dict[str, Any]]:
+    def _run():
+        return (
+            _sb.table("game2_trivia")
+            .select("question_id, vote, player_name")
+            .execute()
+            .data
+            or []
         )
 
-    bw = size * 0.48
-    bh = size * 0.28
-    bx0, by0 = cx - bw / 2, cy - size * 0.78
-    draw.rounded_rectangle(
-        [bx0, by0, bx0 + bw, by0 + bh],
-        radius=8,
-        fill=(180, 25, 15, 235),
-        outline=(255, 220, 120, 255),
-        width=2,
-    )
-    font = _load_font(max(11, int(size * 0.22)))
-    label = "FIRE"
-    bbox = draw.textbbox((0, 0), label, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    draw.text((cx - tw / 2, by0 + (bh - th) / 2 - 1), label, fill=(255, 255, 255), font=font)
+    return _db_call("loading all Game 2 votes", _run)
 
 
-def _draw_legend_panel(
-    img: Image.Image,
-    board_w: int,
-    board_h: int,
-    legend_h: int,
-) -> None:
-    """Large projector-readable legend under the hex field."""
-    draw = ImageDraw.Draw(img)
-    top = board_h
-    draw.rectangle([0, top, board_w, top + legend_h], fill=(32, 40, 48, 255))
-    draw.line([(0, top), (board_w, top)], fill=(90, 110, 100, 255), width=3)
+@st.cache_data(ttl=1)
+def fetch_game3(_sb: Backend) -> list[dict[str, Any]]:
+    def _run():
+        return _sb.table("game3_cloud").select("word, player_name").execute().data or []
 
-    title_font = _load_font(28)
-    item_font = _load_font(22)
-    draw.text((28, top + 16), "LEGEND", fill=(245, 245, 245), font=title_font)
-
-    # Land-use swatches (mini hexes)
-    land_items = [
-        ("Dense Forest", LAND_USE_COLORS["Dense Forest"]),
-        ("Shrubland", LAND_USE_COLORS["Shrubland"]),
-        ("Suburban WUI", LAND_USE_COLORS["Suburban WUI"]),
-        ("Urban Center", LAND_USE_COLORS["Urban Center"]),
-        ("Reservoir", LAND_USE_COLORS["Reservoir"]),
-    ]
-    x = 28
-    y = top + 62
-    mini = 18
-    for name, col in land_items:
-        corners = _hex_corners(x + mini, y + mini, mini)
-        draw.polygon(corners, fill=col, outline=(245, 235, 210))
-        draw.text((x + mini * 2 + 10, y + 6), name, fill=(235, 235, 235), font=item_font)
-        x += mini * 2 + 10 + draw.textbbox((0, 0), name, font=item_font)[2] + 36
-
-    # Hazard callouts on second row
-    y2 = top + 118
-    # Fire sample
-    fx = 48
-    draw.ellipse([fx - 16, y2 - 4, fx + 16, y2 + 28], fill=(220, 50, 25))
-    draw.polygon(
-        [(fx, y2 - 18), (fx - 12, y2 + 8), (fx + 12, y2 + 8)],
-        fill=(255, 170, 40),
-    )
-    draw.text((fx + 28, y2), "FIRE — red badge + flames + orange border", fill=(255, 210, 180), font=item_font)
-
-    # Smoke sample
-    sx = board_w // 2 + 20
-    for dx, dy, r in ((-10, 0, 12), (6, -8, 14), (18, 2, 11)):
-        draw.ellipse([sx + dx - r, y2 + dy - r + 8, sx + dx + r, y2 + dy + r + 8], fill=(190, 190, 195))
-    draw.text((sx + 40, y2), "SMOKE — grey badge + clouds + dashed border", fill=(210, 210, 215), font=item_font)
+    return _db_call("loading Game 3 words", _run)
 
 
-def render_hex_board(
-    grid_rows: list[dict],
-    fire_tiles: list[str] | None = None,
-    smoke_tiles: list[str] | None = None,
-    hex_size: float = 58.0,
-) -> Image.Image:
-    """
-    Draw a fictional pointy-top hex board with land-use icons and hazard overlays.
-    """
-    fire_set = set(fire_tiles or [])
-    smoke_set = set(smoke_tiles or [])
-
-    size = hex_size
-    w = math.sqrt(3) * size
-    h = 2 * size
-    pad = size * 0.85
-    origin_x = pad + w / 2
-    origin_y = pad + size
-    legend_h = 170
-
-    board_w = int(origin_x + (N_COLS - 1) * w + w / 2 + pad + w / 2)
-    field_h = int(origin_y + (N_ROWS - 1) * (h * 0.75) + size + pad * 0.6)
-    board_h = field_h + legend_h
-
-    img = Image.new("RGBA", (board_w, board_h), (28, 36, 44, 255))
-    draw = ImageDraw.Draw(img)
-    font = _load_font(max(12, int(size * 0.28)))
-
-    # Soft vignette / table felt (hex field only)
-    draw.rounded_rectangle(
-        [8, 8, board_w - 9, field_h - 9],
-        radius=24,
-        fill=(42, 58, 48, 255),
-        outline=(70, 95, 75, 255),
-        width=3,
-    )
-
-    for g in grid_rows:
-        col_idx = int(g["col_idx"])
-        row_idx = int(g["row_idx"])
-        tile_id = g["tile_id"]
-        land_use = g["land_use"]
-        color = LAND_USE_COLORS.get(land_use, (160, 160, 160))
-
-        cx, cy = _hex_center(col_idx, row_idx, size, origin_x, origin_y)
-        corners = _hex_corners(cx, cy, size * 0.96)
-
-        # Base fill + rim (Catan tile look)
-        draw.polygon(corners, fill=color, outline=(245, 235, 210), width=2)
-        inner = _hex_corners(cx, cy, size * 0.88)
-        draw.polygon(inner, outline=(255, 255, 255, 60))
-
-        _draw_land_icon(draw, land_use, cx, cy - size * 0.02, size)
-
-        under_fire = tile_id in fire_set
-        under_smoke = tile_id in smoke_set and not under_fire  # fire wins visually
-
-        if under_smoke:
-            _blend_hex(img, (55, 55, 60, 90), corners)
-            d2 = ImageDraw.Draw(img)
-            _draw_hatch(d2, cx, cy, size, (180, 180, 185, 110), angle_deg=35)
-            # Dashed-looking thick grey border via double stroke
-            d2.polygon(corners, outline=(200, 200, 210, 255), width=max(4, int(size * 0.08)))
-            ring = _hex_corners(cx, cy, size * 0.90)
-            d2.polygon(ring, outline=(80, 80, 90, 220), width=max(2, int(size * 0.04)))
-            _draw_smoke_marker(d2, cx, cy, size)
-
-        if under_fire:
-            _blend_hex(img, (255, 60, 20, 85), corners)
-            d2 = ImageDraw.Draw(img)
-            _draw_hatch(d2, cx, cy, size, (255, 120, 40, 130), angle_deg=-40)
-            d2.polygon(corners, outline=(255, 210, 60, 255), width=max(5, int(size * 0.1)))
-            ring = _hex_corners(cx, cy, size * 0.88)
-            d2.polygon(ring, outline=(200, 30, 15, 240), width=max(3, int(size * 0.05)))
-            _draw_fire_marker(d2, cx, cy, size)
-
-        # Tile ID badge (drawn last so it stays readable)
-        d3 = ImageDraw.Draw(img)
-        label = tile_id
-        bbox = d3.textbbox((0, 0), label, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        lx, ly = cx - tw / 2, cy + size * 0.48 - th / 2
-        badge_fill = (120, 20, 10, 210) if under_fire else ((40, 40, 45, 200) if under_smoke else (20, 20, 20, 170))
-        d3.rounded_rectangle(
-            [lx - 6, ly - 2, lx + tw + 6, ly + th + 2],
-            radius=6,
-            fill=badge_fill,
-        )
-        d3.text((lx, ly), label, fill=(255, 255, 255), font=font)
-
-    _draw_legend_panel(img, board_w, field_h, legend_h)
-    return img.convert("RGB")
+def clear_caches() -> None:
+    fetch_app_state.clear()
+    fetch_game1.clear()
+    fetch_game2.clear()
+    fetch_game2_all.clear()
+    fetch_game3.clear()
 
 
-def show_board(
-    grid_rows: list[dict],
-    fire_tiles: list[str] | None = None,
-    smoke_tiles: list[str] | None = None,
-) -> None:
-    board = render_hex_board(grid_rows, fire_tiles, smoke_tiles)
-    st.image(board, width="stretch")
+def set_phase(sb: Backend, phase: str, question: int | None = None) -> None:
+    payload: dict[str, Any] = {"current_phase": phase, "results_open": False}
+    if question is not None:
+        payload["active_question"] = question
+    elif phase == "game2":
+        payload["active_question"] = 1
+    sb.table("app_state").update(payload).eq("id", 1).execute()
+    clear_caches()
 
 
-# ---------------------------------------------------------------------------
-# Game resolution
-# ---------------------------------------------------------------------------
-
-def resolve_round(sb: Client, round_number: int) -> int:
-    """
-    Apply hazard outcomes for `round_number` to every player who has not yet
-    been resolved for that round. Returns number of players updated.
-    """
-    if round_number < 1:
-        return 0
-
-    hazard = HAZARDS[round_number]
-    fire_set = set(hazard["fire"])
-    smoke_set = set(hazard["smoke"])
-
-    players = sb.table("players").select("*").execute().data or []
-    updated = 0
-
-    for p in players:
-        if (p.get("last_resolved") or 0) >= round_number:
-            continue
-
-        tile = p.get("tile_id")
-        action = p.get("current_action")
-        # Only count an action if it was submitted for this round
-        if p.get("action_round") != round_number:
-            action = "do_nothing"  # no submission ≡ do nothing
-
-        capital = float(p.get("capital") or 10000)
-        trust = float(p.get("trust") or 100)
-
-        under_fire = tile in fire_set
-        under_smoke = tile in smoke_set
-
-        # Fire takes precedence when a tile is in both (shouldn't happen in script).
-        # Action costs are deducted on submit; resolution only applies hazard effects.
-        if under_fire:
-            if action == "harden_evacuate":
-                trust = max(0.0, trust - 10.0)
-                # capital unchanged (already paid harden cost)
-            else:
-                # do_nothing or mitigate_smoke
-                capital = 0.0
-                trust = max(0.0, trust - 50.0)
-        elif under_smoke:
-            if action == "mitigate_smoke":
-                pass  # 0% trust loss
-            else:
-                # do_nothing or harden_evacuate
-                trust = max(0.0, trust - 30.0)
-
-        sb.table("players").update(
-            {
-                "capital": round(capital, 2),
-                "trust": round(trust, 2),
-                "current_action": None,
-                "action_round": None,
-                "last_resolved": round_number,
-            }
-        ).eq("player_id", p["player_id"]).execute()
-        updated += 1
-
-    return updated
+def set_results_open(sb: Backend, open_: bool) -> None:
+    sb.table("app_state").update({"results_open": open_}).eq("id", 1).execute()
+    clear_caches()
 
 
-def advance_to_round(sb: Client, target_round: int) -> None:
-    """Resolve the previous round (if any), then set global state to target_round."""
-    state = fetch_global_state(sb)
-    current = int(state.get("round_number") or 0)
-
-    if target_round > current >= 1:
-        resolve_round(sb, current)
-    elif target_round == 0:
-        pass
-
-    # Clear any lingering actions when entering a new live round.
-    # PostgREST requires a WHERE clause on UPDATE (even for "all rows").
-    if target_round >= 1:
-        sb.table("players").update(
-            {"current_action": None, "action_round": None}
-        ).gte("capital", 0).execute()
-
-    hazard = HAZARDS.get(target_round, HAZARDS[0])
-    sb.table("global_state").update(
-        {
-            "phase": hazard["phase"],
-            "round_number": target_round,
-            "weather_text": hazard["weather"],
-        }
+def reset_session(sb: Backend) -> None:
+    sb.table("game1_mapper").delete().neq("concept", "").execute()
+    sb.table("game2_trivia").delete().gte("question_id", 0).execute()
+    sb.table("game3_cloud").delete().neq("word", "").execute()
+    sb.table("app_state").update(
+        {"current_phase": "lobby", "active_question": 1, "results_open": False}
     ).eq("id", 1).execute()
-    clear_data_caches()
-
-
-def end_game(sb: Client) -> None:
-    state = fetch_global_state(sb)
-    current = int(state.get("round_number") or 0)
-    if current >= 1:
-        resolve_round(sb, current)
-
-    sb.table("global_state").update(
-        {
-            "phase": "ended",
-            "weather_text": "Incident terminated. Review outcomes with your table.",
-        }
-    ).eq("id", 1).execute()
-    clear_data_caches()
-
-
-def reset_game(sb: Client) -> None:
-    """Reset to lobby. Prefer RPC; fall back to filtered client updates."""
-    try:
-        sb.rpc("reset_game", {}).execute()
-    except Exception:
-        # Supabase blocks DELETE/UPDATE without a WHERE clause — use filters.
-        sb.table("players").delete().neq(
-            "player_id", "00000000-0000-0000-0000-000000000000"
-        ).execute()
-        sb.table("grid").update({"is_assigned": False}).gte("col_idx", 0).execute()
-        sb.table("global_state").update(
-            {
-                "phase": "lobby",
-                "round_number": 0,
-                "weather_text": "Calm conditions. Awaiting ignition…",
-            }
-        ).eq("id", 1).execute()
-    clear_data_caches()
+    clear_caches()
 
 
 # ---------------------------------------------------------------------------
-# QR code
+# QR / URLs
 # ---------------------------------------------------------------------------
 
 def make_qr_image(url: str):
-    qr = qrcode.QRCode(version=1, box_size=12, border=2)
+    qr = qrcode.QRCode(version=1, box_size=10, border=2)
     qr.add_data(url)
     qr.make(fit=True)
-    return qr.make_image(fill_color="black", back_color="white")
+    return qr.make_image(fill_color="#1A1A1A", back_color="white")
 
 
 def detect_lan_base_url(port: int = 8501) -> str:
-    """Best-effort LAN URL so phones on the same Wi‑Fi can join."""
     import socket
 
     try:
@@ -756,321 +444,620 @@ def detect_lan_base_url(port: int = 8501) -> str:
     return f"http://localhost:{port}"
 
 
-def player_join_url() -> str:
-    """Build the player URL for the QR code."""
-    base = None
+def request_public_base_url() -> str | None:
     try:
-        base = st.secrets.get("APP_BASE_URL") or st.secrets.get("app", {}).get("base_url")
+        headers = st.context.headers
     except Exception:
-        pass
-    base = (
-        base
-        or os.environ.get("APP_BASE_URL")
-        or st.session_state.get("app_base_url")
-        or detect_lan_base_url()
-    )
+        return None
+    host = (headers.get("Host") or headers.get("host") or "").split(",")[0].strip()
+    if not host:
+        return None
+    hostname = host.split(":")[0]
+    if "streamlit.app" in hostname:
+        return f"https://{hostname}"
+    proto = headers.get("X-Forwarded-Proto") or headers.get("x-forwarded-proto")
+    if proto and hostname not in {"localhost", "127.0.0.1"}:
+        return f"{proto}://{host}"
+    return None
+
+
+def player_join_url() -> str:
+    secret_base = None
+    try:
+        secret_base = st.secrets.get("APP_BASE_URL") or (st.secrets.get("app", {}) or {}).get("base_url")
+        secret_base = str(secret_base).strip() if secret_base else None
+        if secret_base and ("YOUR_" in secret_base):
+            secret_base = None
+    except Exception:
+        secret_base = None
+
+    live = request_public_base_url()
+    env_base = os.environ.get("APP_BASE_URL")
+    if live and "streamlit.app" in live:
+        base = live
+    else:
+        base = secret_base or env_base or live or detect_lan_base_url()
     return f"{base.rstrip('/')}/?role=player"
 
 
-# ---------------------------------------------------------------------------
-# Moderator view
-# ---------------------------------------------------------------------------
-
-def render_moderator(sb: Client) -> None:
-    st.title("🔥 Flashpoint: WUI Command")
-    st.caption("Moderator / Projector View")
-
-    # Sidebar controls — refetch state so buttons stay accurate after actions
-    with st.sidebar:
-        clear_data_caches()
-        state = fetch_global_state(sb)
-        phase = state.get("phase", "lobby")
-        round_number = int(state.get("round_number") or 0)
-
-        st.header("Round Controls")
-        st.write(f"**Phase:** `{phase}`")
-        st.write(f"**Round:** {round_number}")
-
-        if st.button("▶ Start Round 1", use_container_width=True, disabled=phase != "lobby"):
-            advance_to_round(sb, 1)
-            st.rerun()
-
-        if st.button("▶ Start Round 2", use_container_width=True, disabled=phase != "round_1"):
-            advance_to_round(sb, 2)
-            st.rerun()
-
-        if st.button("▶ Start Round 3", use_container_width=True, disabled=phase != "round_2"):
-            advance_to_round(sb, 3)
-            st.rerun()
-
-        if st.button(
-            "⏹ End Game",
-            use_container_width=True,
-            type="primary",
-            disabled=phase in ("lobby", "ended"),
-        ):
-            end_game(sb)
-            st.rerun()
-
-        st.divider()
-        if st.button("↺ Reset to Lobby", use_container_width=True):
-            reset_game(sb)
-            st.rerun()
-
-        st.divider()
-        st.subheader("QR Base URL")
-        default_base = st.session_state.get(
-            "app_base_url",
-            os.environ.get("APP_BASE_URL") or detect_lan_base_url(),
-        )
-        base_url = st.text_input(
-            "Public app URL (for QR)",
-            value=default_base,
-            help=(
-                "Phones must use your computer's LAN IP on the same Wi‑Fi, "
-                "e.g. http://192.168.1.10:8501 — not localhost."
-            ),
-        )
-        st.session_state["app_base_url"] = base_url.rstrip("/")
-        st.caption(f"Players open: `{base_url.rstrip('/')}/?role=player`")
-
-        st.divider()
-        st.markdown(
-            """
-            **Legend**
-            - 🌲 Dense Forest
-            - 🌿 Shrubland
-            - 🏠 Suburban WUI
-            - 🏢 Urban Center
-            - 💧 Reservoir
-            - 🔥 Fire overlay
-            - ☁ Smoke overlay
-            """
-        )
-
-    @st.fragment(run_every=timedelta(seconds=2))
-    def live_body():
-        clear_data_caches()
-        state = fetch_global_state(sb)
-        phase = state.get("phase", "lobby")
-        round_number = int(state.get("round_number") or 0)
-        weather = state.get("weather_text", "")
-        count = fetch_player_count(sb)
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Connected Players", count)
-        c2.metric("Phase", phase.replace("_", " ").title())
-        c3.metric("Round", round_number)
-
-        st.info(f"**Forecast:** {weather}")
-
-        if phase == "lobby":
-            left, right = st.columns([1, 1.6])
-            with left:
-                st.subheader("Scan to Join")
-                join_url = player_join_url()
-                st.code(join_url, language=None)
-                img = make_qr_image(join_url)
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                st.image(buf.getvalue(), width=280)
-                st.caption("Players open the link on their phones and receive a random hex tile.")
-            with right:
-                st.subheader("Flashpoint Hex Board")
-                grid_rows = fetch_grid(sb)
-                show_board(grid_rows)
-            return
-
-        grid_rows = fetch_grid(sb)
-        hazard = HAZARDS.get(round_number, HAZARDS[0])
-        show_board(grid_rows, hazard["fire"], hazard["smoke"])
-
-        if phase == "ended":
-            st.success("Game ended. Outcomes have been resolved for the final round.")
-            players = (
-                sb.table("players")
-                .select("tile_id, capital, trust")
-                .order("capital", desc=True)
-                .limit(15)
-                .execute()
-                .data
-                or []
+def render_hero_image() -> None:
+    if HERO_IMAGE.exists():
+        st.image(str(HERO_IMAGE), width="stretch")
+        cap_l, cap_r = st.columns([6, 1])
+        with cap_l:
+            st.caption(
+                "NASA Earth Observatory — smoke drifting off the Southern California coast, 9 January 2025."
             )
-            if players:
-                st.subheader("Top tiles by remaining capital")
-                st.dataframe(players, width="stretch", hide_index=True)
+        with cap_r:
+            if NASA_LOGO.exists():
+                st.image(str(NASA_LOGO), width=72)
+
+
+def render_qr(url: str, width: int) -> None:
+    img = make_qr_image(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    st.image(buf.getvalue(), width=width)
+
+
+def game1_player_count(rows: list[dict[str, Any]]) -> int:
+    names = {str(r.get("player_name") or "").strip() for r in rows if r.get("player_name")}
+    if names:
+        return len(names)
+    return len(rows) // max(len(CONCEPTS), 1)
+
+
+def game3_words(rows: list[dict[str, Any]]) -> list[str]:
+    return [str(r.get("word") or "").strip() for r in rows if str(r.get("word") or "").strip()]
+
+
+# ---------------------------------------------------------------------------
+# Charts
+# ---------------------------------------------------------------------------
+
+PLOTLY_LAYOUT = dict(
+    paper_bgcolor="#FFFFFF",
+    plot_bgcolor="#FFFFFF",
+    font=dict(family="Arial, system-ui, sans-serif", color="#1A1A1A", size=22),
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.04,
+        x=0,
+        font=dict(size=22),
+        bgcolor="#FFFFFF",
+        itemwidth=80,
+    ),
+    margin=dict(l=220, r=40, t=72, b=56),
+)
+
+
+def game1_chart(rows: list[dict[str, Any]], *, compact: bool = False) -> go.Figure:
+    counts = {c: {"Before": 0, "During": 0, "After": 0} for c in CONCEPTS}
+    for row in rows:
+        concept = row.get("concept")
+        phase = row.get("assigned_phase")
+        if concept in counts and phase in counts[concept]:
+            counts[concept][phase] += 1
+
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                name="Before",
+                y=CONCEPTS,
+                x=[counts[c]["Before"] for c in CONCEPTS],
+                orientation="h",
+                marker_color="#2E7D32",
+                width=0.42,
+            ),
+            go.Bar(
+                name="During",
+                y=CONCEPTS,
+                x=[counts[c]["During"] for c in CONCEPTS],
+                orientation="h",
+                marker_color="#FF5722",
+                width=0.42,
+            ),
+            go.Bar(
+                name="After",
+                y=CONCEPTS,
+                x=[counts[c]["After"] for c in CONCEPTS],
+                orientation="h",
+                marker_color="#9E9E9E",
+                width=0.42,
+            ),
+        ]
+    )
+    max_x = 0
+    for c in CONCEPTS:
+        max_x = max(max_x, counts[c]["Before"], counts[c]["During"], counts[c]["After"])
+    layout = dict(PLOTLY_LAYOUT)
+    tick = 14 if compact else 20
+    if compact:
+        layout["font"] = dict(family="Arial, system-ui, sans-serif", color="#1A1A1A", size=14)
+        layout["legend"] = dict(
+            orientation="h", yanchor="bottom", y=1.02, x=0, font=dict(size=14), bgcolor="#FFFFFF"
+        )
+        layout["margin"] = dict(l=150, r=16, t=40, b=32)
+    fig.update_layout(
+        **layout,
+        barmode="group",
+        bargap=0.18,
+        bargroupgap=0.08,
+        xaxis_title="Votes",
+        yaxis_title="",
+        height=420 if compact else 880,
+        xaxis=dict(
+            dtick=1,
+            range=[0, max(max_x, 1) + 0.75],
+            automargin=True,
+            tickfont=dict(size=tick),
+            gridcolor="#EEEEEE",
+            zeroline=True,
+            zerolinecolor="#BDBDBD",
+        ),
+        showlegend=True,
+    )
+    fig.update_yaxes(
+        autorange="reversed",
+        automargin=True,
+        tickfont=dict(size=tick),
+        ticksuffix="  ",
+        categoryorder="array",
+        categoryarray=CONCEPTS,
+    )
+    return fig
+
+
+def game2_chart(rows: list[dict[str, Any]], title: str | None = None) -> go.Figure:
+    fact = sum(1 for r in rows if str(r.get("vote")) == "Fact")
+    fiction = sum(1 for r in rows if str(r.get("vote")) == "Fiction")
+    total = fact + fiction
+    fact_pct = (100.0 * fact / total) if total else 0.0
+    fiction_pct = (100.0 * fiction / total) if total else 0.0
+
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                name=f"Fact ({fact_pct:.0f}%)",
+                y=["Room"],
+                x=[fact_pct],
+                orientation="h",
+                marker_color="#FF5722",
+                text=[f"Fact {fact_pct:.0f}%" if fact_pct >= 18 else ""],
+                textposition="inside",
+                insidetextanchor="middle",
+                insidetextfont=dict(size=22, color="#FFFFFF"),
+                cliponaxis=False,
+            ),
+            go.Bar(
+                name=f"Fiction ({fiction_pct:.0f}%)",
+                y=["Room"],
+                x=[fiction_pct],
+                orientation="h",
+                marker_color="#9E9E9E",
+                text=[f"Fiction {fiction_pct:.0f}%" if fiction_pct >= 18 else ""],
+                textposition="inside",
+                insidetextanchor="middle",
+                insidetextfont=dict(size=22, color="#1A1A1A"),
+                cliponaxis=False,
+            ),
+        ]
+    )
+    layout = {k: v for k, v in PLOTLY_LAYOUT.items() if k != "margin"}
+    fig.update_layout(
+        **layout,
+        barmode="stack",
+        xaxis=dict(range=[0, 100], ticksuffix="%", dtick=25),
+        yaxis=dict(showticklabels=False),
+        height=280,
+        title=dict(text=title or f"n = {total} votes", font=dict(size=24), y=0.95),
+        margin=dict(l=24, r=24, t=80, b=48),
+        legend=dict(orientation="h", yanchor="bottom", y=1.12, x=0, font=dict(size=22)),
+    )
+    return fig
+
+
+def game2_summary_chart(all_rows: list[dict[str, Any]]) -> go.Figure:
+    labels: list[str] = []
+    fact_vals: list[float] = []
+    fiction_vals: list[float] = []
+    hovers: list[str] = []
+    for qnum, text in GAME2_QUESTIONS.items():
+        subset = [r for r in all_rows if int(r.get("question_id") or 0) == qnum]
+        fact = sum(1 for r in subset if str(r.get("vote")) == "Fact")
+        fiction = sum(1 for r in subset if str(r.get("vote")) == "Fiction")
+        total = fact + fiction
+        fact_pct = (100.0 * fact / total) if total else 0.0
+        fiction_pct = (100.0 * fiction / total) if total else 0.0
+        labels.append(f"Q{qnum}")
+        fact_vals.append(fact_pct)
+        fiction_vals.append(fiction_pct)
+        hovers.append(f"{text}<br>n={total}")
+
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                name="Fact",
+                y=labels,
+                x=fact_vals,
+                orientation="h",
+                marker_color="#FF5722",
+                customdata=hovers,
+                hovertemplate="%{customdata}<br>Fact %{x:.0f}%<extra></extra>",
+            ),
+            go.Bar(
+                name="Fiction",
+                y=labels,
+                x=fiction_vals,
+                orientation="h",
+                marker_color="#9E9E9E",
+                customdata=hovers,
+                hovertemplate="%{customdata}<br>Fiction %{x:.0f}%<extra></extra>",
+            ),
+        ]
+    )
+    fig.update_layout(
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        font=dict(family="Arial, system-ui, sans-serif", color="#1A1A1A", size=14),
+        barmode="stack",
+        height=420,
+        margin=dict(l=48, r=16, t=40, b=32),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, font=dict(size=14)),
+        xaxis=dict(range=[0, 100], ticksuffix="%", dtick=25),
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def game3_image(words: list[str], *, compact: bool = False) -> Any:
+    text = " ".join(w for w in words if w)
+    if not text:
+        return None
+    wc = WordCloud(
+        width=900 if compact else 1600,
+        height=700 if compact else 800,
+        background_color="#FFFFFF",
+        colormap="YlOrRd",
+        max_words=80,
+        collocations=False,
+        prefer_horizontal=0.85,
+        min_font_size=16 if compact else 22,
+        max_font_size=90 if compact else 140,
+        relative_scaling=0.45,
+        margin=10,
+        scale=2,
+    ).generate(text)
+    fig, ax = plt.subplots(
+        figsize=(7, 5.5) if compact else (16, 8),
+        facecolor="#FFFFFF",
+        dpi=120 if compact else 140,
+    )
+    ax.imshow(wc, interpolation="bilinear")
+    ax.axis("off")
+    fig.tight_layout(pad=0.2)
+    return fig
+
+
+def render_rules(phase: str = "lobby") -> None:
+    if phase == "lobby":
+        st.markdown(GAMES_AND_RULES)
+        return
+    st.markdown(GAME_RULES.get(phase, ""))
+
+
+# ---------------------------------------------------------------------------
+# Moderator
+# ---------------------------------------------------------------------------
+
+def render_moderator_header(phase: str) -> None:
+    st.markdown(f'<div class="wui-kicker">{APP_NAME}</div>', unsafe_allow_html=True)
+    st.markdown(f'<p class="wui-title">{SESSION_TITLE}</p>', unsafe_allow_html=True)
+    st.markdown(
+        f'<p class="wui-subtitle">{PHASE_TITLES.get(phase, phase)}</p>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_moderator(sb: Backend) -> None:
+    if st_autorefresh is not None:
+        st_autorefresh(interval=2000, key="wui_moderator_refresh")
+
+    with st.sidebar:
+        st.header("Admin controls")
+        clear_caches()
+        state = fetch_app_state(sb)
+        phase = state["current_phase"]
+        qid = int(state["active_question"])
+
+        st.subheader("Session")
+        st.write(PHASE_TITLES.get(phase, phase))
+
+        st.subheader("Games")
+        for key, label in (
+            ("lobby", "Lobby"),
+            ("game1", "Game 1"),
+            ("game2", "Game 2"),
+            ("game3", "Game 3"),
+            ("end", "End"),
+        ):
+            if st.button(label, width="stretch", disabled=phase == key, key=f"phase_{key}"):
+                if key == "game2":
+                    set_phase(sb, key, 1)
+                else:
+                    set_phase(sb, key)
+                st.rerun()
+
+        st.divider()
+        if st.button("Reset all responses", width="stretch"):
+            reset_session(sb)
+            st.rerun()
+
+    clear_caches()
+    state = fetch_app_state(sb)
+    phase = state["current_phase"]
+    qid = int(state["active_question"])
+    revealed = bool(state["results_open"])
+    render_moderator_header(phase)
+
+    if phase == "lobby":
+        left, right = st.columns([1.05, 1.2])
+        with left:
+            render_hero_image()
+            st.subheader("Join on your phone")
+            join_url = player_join_url()
+            st.markdown(f'<div class="wui-join-url">{join_url}</div>', unsafe_allow_html=True)
+            st.write(
+                "Open this URL on your phone. On Streamlit Cloud the QR code should work "
+                "on any network. A laptop-only address often fails on conference Wi‑Fi."
+            )
+            with st.expander("QR code"):
+                render_qr(join_url, width=240)
+        with right:
+            render_rules("lobby")
+        return
+
+    if phase == "game1":
+        g1 = fetch_game1(sb)
+        n = game1_player_count(g1)
+        if not revealed:
+            render_rules("game1")
+            st.info(f"Collecting allocations. **{n}** player submissions so far.")
+            if st.button("Reveal results", width="stretch", type="primary"):
+                set_results_open(sb, True)
+                st.rerun()
+            return
+        st.plotly_chart(game1_chart(g1), width="stretch")
+        st.write(f"**{n}** players submitted.")
+        return
+
+    if phase == "game2":
+        left, right = st.columns([1, 2.4])
+        rows = fetch_game2(sb, qid)
+        n = len(rows)
+        last_q = qid >= max(GAME2_QUESTIONS)
+        with left:
+            if not revealed:
+                if st.button("Reveal this question", width="stretch", type="primary"):
+                    set_results_open(sb, True)
+                    st.rerun()
+            elif not last_q:
+                if st.button("Next question", width="stretch", type="primary"):
+                    set_phase(sb, "game2", qid + 1)
+                    st.rerun()
+            else:
+                st.write("Last question. Use **Game 3** in Admin controls when you are ready.")
+        with right:
+            prompt = GAME2_QUESTIONS.get(qid, "Question unavailable.")
+            st.markdown(f'<p class="wui-question">Q{qid}. {prompt}</p>', unsafe_allow_html=True)
+            if not revealed:
+                st.info(f"Collecting votes. **{n}** responses so far. Results hidden.")
+            else:
+                st.plotly_chart(game2_chart(rows), width="stretch")
+        if not revealed:
+            st.markdown("---")
+            render_rules("game2")
+        return
+
+    if phase == "game3":
+        rows = fetch_game3(sb)
+        words = game3_words(rows)
+        st.markdown(f'<p class="wui-question">{GAME3_PROMPT}</p>', unsafe_allow_html=True)
+        if not revealed:
+            render_rules("game3")
+            st.info(f"Collecting phrases. **{len(words)}** entries so far.")
+            if st.button("Reveal results", width="stretch", type="primary"):
+                set_results_open(sb, True)
+                st.rerun()
+            return
+        fig = game3_image(words)
+        if fig is None:
+            st.info("No phrases were submitted.")
         else:
-            with st.expander("Hazard tiles this round", expanded=False):
-                st.write("**Fire:**", ", ".join(hazard["fire"]) or "—")
-                st.write("**Smoke:**", ", ".join(hazard["smoke"]) or "—")
+            st.pyplot(fig, width="stretch")
+            plt.close(fig)
+        st.write(f"**{len(words)}** phrases submitted.")
+        return
 
-    live_body()
+    st.markdown(
+        """
+        <style>
+        [data-testid="stAppViewContainer"] .main .block-container {
+            padding-top: 0.35rem;
+            padding-bottom: 0.35rem;
+            max-width: 100%;
+        }
+        .wui-title { font-size: 1.7rem !important; }
+        .wui-subtitle { font-size: 1.25rem !important; margin-bottom: 0.4rem !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    render_full_summary(sb)
+
+
+def render_full_summary(sb: Backend) -> None:
+    g1, g2, g3 = st.columns(3, gap="small")
+    with g1:
+        st.markdown("**Game 1 — Before / During / After**")
+        st.plotly_chart(
+            game1_chart(fetch_game1(sb), compact=True),
+            width="stretch",
+            config={"displayModeBar": False},
+        )
+    with g2:
+        st.markdown("**Game 2 — Fact or Fiction**")
+        st.plotly_chart(
+            game2_summary_chart(fetch_game2_all(sb)),
+            width="stretch",
+            config={"displayModeBar": False},
+        )
+    with g3:
+        st.markdown("**Game 3 — Bottlenecks**")
+        words = game3_words(fetch_game3(sb))
+        fig = game3_image(words, compact=True)
+        if fig is None:
+            st.info("No phrases yet.")
+        else:
+            st.pyplot(fig, width="stretch")
+            plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
-# Player view
+# Player
 # ---------------------------------------------------------------------------
 
-def ensure_player(sb: Client) -> dict[str, Any]:
-    """Assign a tile once per browser session and return the player row."""
-    if "player_id" not in st.session_state:
-        st.session_state["player_id"] = str(uuid.uuid4())
+def player_lock_key(phase: str, qid: int) -> str:
+    return f"{phase}:{qid}"
 
-    player_id = st.session_state["player_id"]
-    existing = fetch_player(sb, player_id)
-    if existing and existing.get("tile_id"):
+
+def ensure_player_name() -> str | None:
+    existing = str(st.session_state.get("player_name") or "").strip()
+    if existing:
+        st.write(f"Playing as **{existing}**")
         return existing
 
-    try:
-        res = sb.rpc("assign_random_tile", {"p_player_id": player_id}).execute()
-    except Exception as exc:
-        st.error(f"Could not assign a tile: {exc}")
-        st.stop()
-
-    data = res.data
-    if isinstance(data, list) and data:
-        row = data[0]
-    elif isinstance(data, dict):
-        row = data
-    else:
-        st.error("No tiles available — the grid is full (56 players max).")
-        st.stop()
-
-    player = fetch_player(sb, player_id)
-    if not player:
-        return {
-            "player_id": player_id,
-            "tile_id": row["tile_id"],
-            "capital": row["capital"],
-            "trust": row["trust"],
-            "current_action": None,
-            "action_round": None,
-            "last_resolved": 0,
-            "grid": {"land_use": row["land_use"]},
-        }
-    return player
+    with st.form("player_name_form"):
+        st.write("Enter your name before Game 1.")
+        name = st.text_input("Your name", max_chars=40)
+        posted = st.form_submit_button("Continue", width="stretch")
+    if posted:
+        cleaned = (name or "").strip()
+        if not cleaned:
+            st.warning("Please enter your name.")
+            return None
+        st.session_state["player_name"] = cleaned
+        st.rerun()
+    return None
 
 
-def submit_action(sb: Client, player_id: str, action: str, round_number: int) -> bool:
-    """Lock in an action and deduct its cost immediately. Returns False if rejected."""
-    cost = ACTION_COSTS[action]
-    player = fetch_player(sb, player_id)
-    if not player:
-        return False
+def render_player(sb: Backend) -> None:
+    st.markdown(f'<div class="wui-kicker">{APP_NAME}</div>', unsafe_allow_html=True)
+    st.markdown(f"### {SESSION_TITLE}")
 
-    if player.get("current_action") and player.get("action_round") == round_number:
-        return False
+    clear_caches()
+    state = fetch_app_state(sb)
+    phase = state["current_phase"]
+    qid = int(state["active_question"])
+    lock = player_lock_key(phase, qid)
+    submitted = st.session_state.get("wui_submitted_lock") == lock
 
-    capital = float(player.get("capital") or 0)
-    if capital < cost:
-        st.warning(f"Not enough capital for {ACTION_LABELS[action]} (${cost:,}).")
-        return False
+    waiting = phase in ("lobby", "end") or submitted
+    if waiting and st_autorefresh is not None:
+        st_autorefresh(interval=5000, key="wui_player_refresh")
 
-    sb.table("players").update(
-        {
-            "current_action": action,
-            "action_round": round_number,
-            "capital": round(capital - cost, 2),
-        }
-    ).eq("player_id", player_id).execute()
-    return True
-
-
-def render_player(sb: Client) -> None:
-    st.title("🔥 Flashpoint")
-    st.caption("Player Command Console")
-
-    player = ensure_player(sb)
-    tile_id = player.get("tile_id", "?")
-    land_use = (player.get("grid") or {}).get("land_use") or "Unknown"
-    player_id = player["player_id"]
-
-    st.markdown(f"### Tile **{tile_id}** · {land_use}")
-
-    @st.fragment(run_every=timedelta(seconds=2))
-    def player_phase_panel():
-        clear_data_caches()
-        state = fetch_global_state(sb)
-        phase = state.get("phase", "lobby")
-        round_number = int(state.get("round_number") or 0)
-        weather = state.get("weather_text", "")
-        fresh = fetch_player(sb, player_id) or player
-        fresh_capital = float(fresh.get("capital") or 10000)
-        fresh_trust = float(fresh.get("trust") or 100)
-
-        m1, m2 = st.columns(2)
-        m1.metric("Capital", f"${fresh_capital:,.0f}")
-        m2.metric("Trust", f"{fresh_trust:.0f}%")
-
-        if phase == "lobby":
-            st.success("You're connected. Wait for the Moderator to start Round 1.")
-            st.info(weather)
-            st.caption("Listening for round start…")
-            return
-
-        if phase == "ended":
-            st.warning("Game over. Check the projector for the final map.")
-            st.write(
-                f"Final capital: **${fresh_capital:,.0f}** · Trust: **{fresh_trust:.0f}%**"
-            )
-            return
-
-        st.info(f"**Round {round_number}** — {weather}")
-
-        hazard = HAZARDS.get(round_number, HAZARDS[0])
-        if tile_id in hazard["fire"]:
-            st.error("⚠ Your tile is in the projected **FIRE** path this round.")
-        elif tile_id in hazard["smoke"]:
-            st.warning("☁ Your tile is under the projected **SMOKE** plume this round.")
-        else:
-            st.caption("Your tile is outside the current fire/smoke polygons.")
-
-        already_acted = (
-            fresh.get("current_action") is not None
-            and fresh.get("action_round") == round_number
-        )
-
-        if already_acted:
-            label = ACTION_LABELS.get(fresh["current_action"], fresh["current_action"])
-            st.success(f"Action locked in: **{label}**")
-            st.caption("Waiting for Moderator to advance the round…")
-            return
-
-        st.subheader("Choose your action")
-        st.caption("You may submit once per round. Costs are deducted immediately.")
-
-        if st.button("① Do Nothing  ($0)", use_container_width=True, key="act_nothing"):
-            submit_action(sb, player_id, "do_nothing", round_number)
+    if waiting:
+        if st.button("Refresh to next game", width="stretch"):
+            clear_caches()
             st.rerun()
 
-        if st.button(
-            "② Mitigate Smoke  ($2,000)",
-            use_container_width=True,
-            key="act_smoke",
-            disabled=fresh_capital < 2000,
-        ):
-            submit_action(sb, player_id, "mitigate_smoke", round_number)
+    st.write(PHASE_TITLES.get(phase, phase))
+
+    if phase == "lobby":
+        name = ensure_player_name()
+        if name:
+            st.success("You're in. Watch the main screen — Game 1 will start here.")
+        return
+
+    if phase == "end":
+        st.info("That's a wrap. Look at the main screen!")
+        return
+
+    player_name = ensure_player_name()
+    if not player_name:
+        return
+
+    if submitted:
+        st.success("Got it — look at the main screen!")
+        st.write("Inputs unlock when the moderator changes the game or question.")
+        return
+
+    if phase == "game1":
+        with st.form("game1_form"):
+            st.write("When does each tool matter most?")
+            answers: dict[str, Any] = {}
+            for concept in CONCEPTS:
+                answers[concept] = st.radio(
+                    concept,
+                    options=["Before", "During", "After"],
+                    index=None,
+                    horizontal=False,
+                    key=f"g1_{concept}",
+                )
+            posted = st.form_submit_button("Submit allocations", width="stretch")
+
+        if posted:
+            missing = [c for c, v in answers.items() if not v]
+            if missing:
+                st.warning("Choose Before, During, or After for every tool.")
+            else:
+                for concept, assigned in answers.items():
+                    sb.table("game1_mapper").insert(
+                        {
+                            "concept": concept,
+                            "assigned_phase": assigned,
+                            "player_name": player_name,
+                        }
+                    ).execute()
+                st.session_state["wui_submitted_lock"] = lock
+                clear_caches()
+                st.rerun()
+        return
+
+    if phase == "game2":
+        st.markdown(f"#### {GAME2_QUESTIONS.get(qid, '')}")
+        fact = st.button("Fact", width="stretch", type="primary")
+        fiction = st.button("Fiction", width="stretch")
+        vote = "Fact" if fact else ("Fiction" if fiction else None)
+        if vote:
+            sb.table("game2_trivia").insert(
+                {"question_id": qid, "vote": vote, "player_name": player_name}
+            ).execute()
+            st.session_state["wui_submitted_lock"] = lock
+            clear_caches()
             st.rerun()
+        return
 
-        if st.button(
-            "③ Harden / Evacuate  ($5,000)",
-            use_container_width=True,
-            key="act_harden",
-            disabled=fresh_capital < 5000,
-        ):
-            submit_action(sb, player_id, "harden_evacuate", round_number)
-            st.rerun()
-
-        with st.expander("What do these do?"):
-            st.markdown(
-                """
-                - **Do Nothing** — no cost. Smoke hurts trust; fire wipes capital.
-                - **Mitigate Smoke** — $2,000. Blocks smoke trust loss; does **not** protect against fire.
-                - **Harden/Evacuate** — $5,000. Keeps capital if fire hits (small trust hit); does **not** block smoke.
-                """
-            )
-
-    player_phase_panel()
+    if phase == "game3":
+        st.write(GAME3_PROMPT)
+        with st.form("game3_form"):
+            w1 = st.text_input("Phrase 1", max_chars=40)
+            w2 = st.text_input("Phrase 2 (optional)", max_chars=40)
+            w3 = st.text_input("Phrase 3 (optional)", max_chars=40)
+            posted = st.form_submit_button("Submit", width="stretch")
+        if posted:
+            phrases = [p.strip() for p in (w1, w2, w3) if (p or "").strip()]
+            if not phrases:
+                st.warning("Enter at least one word or short phrase.")
+            else:
+                for phrase in phrases:
+                    sb.table("game3_cloud").insert(
+                        {"word": phrase, "player_name": player_name}
+                    ).execute()
+                st.session_state["wui_submitted_lock"] = lock
+                clear_caches()
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1079,20 +1066,28 @@ def render_player(sb: Client) -> None:
 
 def main() -> None:
     role = (st.query_params.get("role") or "").lower().strip()
-    sb = get_supabase()
+    inject_theme(role)
+    sb = get_backend()
+    if role != "player" and st.session_state.get("local_mode"):
+        st.info(
+            st.session_state.get("local_mode_reason")
+            or "Local SQLite play mode — no internet required."
+        )
 
     if role == "moderator":
         render_moderator(sb)
     elif role == "player":
         render_player(sb)
     else:
-        st.title("Flashpoint: WUI Command")
-        st.write("Choose a role:")
+        st.markdown(f'<div class="wui-kicker">{APP_NAME}</div>', unsafe_allow_html=True)
+        st.markdown(f'<p class="wui-title">{SESSION_TITLE}</p>', unsafe_allow_html=True)
+        render_hero_image()
+        st.write("Choose a view:")
         col_a, col_b = st.columns(2)
         with col_a:
-            st.link_button("Moderator (projector)", "?role=moderator", use_container_width=True)
+            st.link_button("Moderator (projector)", "?role=moderator", width="stretch")
         with col_b:
-            st.link_button("Player (mobile)", "?role=player", use_container_width=True)
+            st.link_button("Player (mobile)", "?role=player", width="stretch")
 
 
 if __name__ == "__main__":

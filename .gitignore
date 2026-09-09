@@ -17,3 +17,7 @@ venv/
 
 # Streamlit
 .streamlit/machine_id*
+
+# Local play database
+data/*.sqlite
+data/*.sqlite-*
