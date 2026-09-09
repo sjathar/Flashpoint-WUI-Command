@@ -66,7 +66,6 @@ GAME2_QUESTIONS: dict[int, str] = {
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 HERO_IMAGE = ASSETS_DIR / "la_wui_smoke_2025.jpg"
-NASA_LOGO = ASSETS_DIR / "nasa_logo.png"
 
 GAMES_AND_RULES = """
 ### Games and Rules
@@ -129,6 +128,11 @@ def inject_theme(role: str) -> None:
         }}
         [data-testid="stSidebar"] {{
             background-color: #F5F5F5 !important;
+        }}
+        [data-testid="stToolbar"], [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"] {{
+            visibility: hidden;
+            height: 0;
         }}
         [data-testid="stSidebar"] * {{
             font-size: 20px !important;
@@ -395,7 +399,10 @@ def clear_caches() -> None:
 
 
 def set_phase(sb: Backend, phase: str, question: int | None = None) -> None:
-    payload: dict[str, Any] = {"current_phase": phase, "results_open": False}
+    payload: dict[str, Any] = {
+        "current_phase": phase,
+        "results_open": phase == "game2",
+    }
     if question is not None:
         payload["active_question"] = question
     elif phase == "game2":
@@ -482,15 +489,8 @@ def player_join_url() -> str:
 
 def render_hero_image() -> None:
     if HERO_IMAGE.exists():
-        st.image(str(HERO_IMAGE), width="stretch")
-        cap_l, cap_r = st.columns([6, 1])
-        with cap_l:
-            st.caption(
-                "NASA Earth Observatory — smoke drifting off the Southern California coast, 9 January 2025."
-            )
-        with cap_r:
-            if NASA_LOGO.exists():
-                st.image(str(NASA_LOGO), width=72)
+        st.image(str(HERO_IMAGE), width=220)
+        st.caption("NASA Earth Observatory, 9 January 2025.")
 
 
 def render_qr(url: str, width: int) -> None:
@@ -601,7 +601,8 @@ def game1_chart(rows: list[dict[str, Any]], *, compact: bool = False) -> go.Figu
     fig.update_yaxes(
         autorange="reversed",
         automargin=True,
-        tickfont=dict(size=tick),
+        tickfont=dict(size=tick, color="#000000"),
+        color="#000000",
         ticksuffix="  ",
         categoryorder="array",
         categoryarray=CONCEPTS,
@@ -711,7 +712,8 @@ def game2_summary_chart(all_rows: list[dict[str, Any]]) -> go.Figure:
     return fig
 
 
-def game3_image(words: list[str], *, compact: bool = False) -> Any:
+@st.cache_data(ttl=7)
+def game3_png(words: tuple[str, ...], compact: bool = False) -> bytes | None:
     text = " ".join(w for w in words if w)
     if not text:
         return None
@@ -728,6 +730,7 @@ def game3_image(words: list[str], *, compact: bool = False) -> Any:
         relative_scaling=0.45,
         margin=10,
         scale=2,
+        random_state=42,
     ).generate(text)
     fig, ax = plt.subplots(
         figsize=(7, 5.5) if compact else (16, 8),
@@ -737,7 +740,18 @@ def game3_image(words: list[str], *, compact: bool = False) -> Any:
     ax.imshow(wc, interpolation="bilinear")
     ax.axis("off")
     fig.tight_layout(pad=0.2)
-    return fig
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", facecolor="#FFFFFF")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def show_game3_cloud(words: list[str], *, compact: bool = False) -> None:
+    png = game3_png(tuple(words), compact)
+    if png is None:
+        st.info("No phrases yet.")
+        return
+    st.image(png, width="stretch")
 
 
 def render_rules(phase: str = "lobby") -> None:
@@ -761,9 +775,6 @@ def render_moderator_header(phase: str) -> None:
 
 
 def render_moderator(sb: Backend) -> None:
-    if st_autorefresh is not None:
-        st_autorefresh(interval=2000, key="wui_moderator_refresh")
-
     with st.sidebar:
         st.header("Admin controls")
         clear_caches()
@@ -794,27 +805,27 @@ def render_moderator(sb: Backend) -> None:
             reset_session(sb)
             st.rerun()
 
+    if st_autorefresh is not None:
+        st_autorefresh(interval=2000, key="wui_moderator_refresh")
+
     clear_caches()
     state = fetch_app_state(sb)
     phase = state["current_phase"]
     qid = int(state["active_question"])
     revealed = bool(state["results_open"])
+    if phase == "game2" and not revealed:
+        set_results_open(sb, True)
+        st.rerun()
     render_moderator_header(phase)
 
     if phase == "lobby":
         left, right = st.columns([1.05, 1.2])
         with left:
-            render_hero_image()
-            st.subheader("Join on your phone")
             join_url = player_join_url()
+            render_qr(join_url, width=280)
             st.markdown(f'<div class="wui-join-url">{join_url}</div>', unsafe_allow_html=True)
-            st.write(
-                "Open this URL on your phone. On Streamlit Cloud the QR code should work "
-                "on any network. A laptop-only address often fails on conference Wi‑Fi."
-            )
-            with st.expander("QR code"):
-                render_qr(join_url, width=240)
         with right:
+            render_hero_image()
             render_rules("lobby")
         return
 
@@ -828,36 +839,22 @@ def render_moderator(sb: Backend) -> None:
                 set_results_open(sb, True)
                 st.rerun()
             return
-        st.plotly_chart(game1_chart(g1), width="stretch")
+        st.plotly_chart(game1_chart(g1), width="stretch", theme=None)
         st.write(f"**{n}** players submitted.")
         return
 
     if phase == "game2":
-        left, right = st.columns([1, 2.4])
         rows = fetch_game2(sb, qid)
         n = len(rows)
         last_q = qid >= max(GAME2_QUESTIONS)
-        with left:
-            if not revealed:
-                if st.button("Reveal this question", width="stretch", type="primary"):
-                    set_results_open(sb, True)
-                    st.rerun()
-            elif not last_q:
-                if st.button("Next question", width="stretch", type="primary"):
-                    set_phase(sb, "game2", qid + 1)
-                    st.rerun()
-            else:
-                st.write("Last question. Use **Game 3** in Admin controls when you are ready.")
-        with right:
-            prompt = GAME2_QUESTIONS.get(qid, "Question unavailable.")
-            st.markdown(f'<p class="wui-question">Q{qid}. {prompt}</p>', unsafe_allow_html=True)
-            if not revealed:
-                st.info(f"Collecting votes. **{n}** responses so far. Results hidden.")
-            else:
-                st.plotly_chart(game2_chart(rows), width="stretch")
-        if not revealed:
-            st.markdown("---")
-            render_rules("game2")
+        prompt = GAME2_QUESTIONS.get(qid, "Question unavailable.")
+        st.markdown(f'<p class="wui-question">Q{qid}. {prompt}</p>', unsafe_allow_html=True)
+        if not last_q:
+            if st.button("Next question", width="stretch", type="primary"):
+                set_phase(sb, "game2", qid + 1)
+                st.rerun()
+        st.plotly_chart(game2_chart(rows), width="stretch", theme=None)
+        st.caption(f"{n} votes")
         return
 
     if phase == "game3":
@@ -871,13 +868,8 @@ def render_moderator(sb: Backend) -> None:
                 set_results_open(sb, True)
                 st.rerun()
             return
-        fig = game3_image(words)
-        if fig is None:
-            st.info("No phrases were submitted.")
-        else:
-            st.pyplot(fig, width="stretch")
-            plt.close(fig)
-        st.write(f"**{len(words)}** phrases submitted.")
+        show_game3_cloud(words)
+        st.caption(f"{len(words)} phrases")
         return
 
     st.markdown(
@@ -904,6 +896,7 @@ def render_full_summary(sb: Backend) -> None:
         st.plotly_chart(
             game1_chart(fetch_game1(sb), compact=True),
             width="stretch",
+            theme=None,
             config={"displayModeBar": False},
         )
     with g2:
@@ -916,12 +909,7 @@ def render_full_summary(sb: Backend) -> None:
     with g3:
         st.markdown("**Game 3 — Bottlenecks**")
         words = game3_words(fetch_game3(sb))
-        fig = game3_image(words, compact=True)
-        if fig is None:
-            st.info("No phrases yet.")
-        else:
-            st.pyplot(fig, width="stretch")
-            plt.close(fig)
+        show_game3_cloud(words, compact=True)
 
 
 # ---------------------------------------------------------------------------
@@ -935,12 +923,10 @@ def player_lock_key(phase: str, qid: int) -> str:
 def ensure_player_name() -> str | None:
     existing = str(st.session_state.get("player_name") or "").strip()
     if existing:
-        st.write(f"Playing as **{existing}**")
         return existing
 
     with st.form("player_name_form"):
-        st.write("Enter your name before Game 1.")
-        name = st.text_input("Your name", max_chars=40)
+        name = st.text_input("Name", max_chars=40, label_visibility="collapsed", placeholder="Name")
         posted = st.form_submit_button("Continue", width="stretch")
     if posted:
         cleaned = (name or "").strip()
@@ -972,16 +958,14 @@ def render_player(sb: Backend) -> None:
             clear_caches()
             st.rerun()
 
-    st.write(PHASE_TITLES.get(phase, phase))
-
     if phase == "lobby":
         name = ensure_player_name()
         if name:
-            st.success("You're in. Watch the main screen — Game 1 will start here.")
+            st.success("You're in.")
         return
 
     if phase == "end":
-        st.info("That's a wrap. Look at the main screen!")
+        st.success("Look at the main screen.")
         return
 
     player_name = ensure_player_name()
@@ -989,13 +973,11 @@ def render_player(sb: Backend) -> None:
         return
 
     if submitted:
-        st.success("Got it — look at the main screen!")
-        st.write("Inputs unlock when the moderator changes the game or question.")
+        st.success("Look at the main screen.")
         return
 
     if phase == "game1":
         with st.form("game1_form"):
-            st.write("When does each tool matter most?")
             answers: dict[str, Any] = {}
             for concept in CONCEPTS:
                 answers[concept] = st.radio(
@@ -1042,9 +1024,9 @@ def render_player(sb: Backend) -> None:
     if phase == "game3":
         st.write(GAME3_PROMPT)
         with st.form("game3_form"):
-            w1 = st.text_input("Phrase 1", max_chars=40)
-            w2 = st.text_input("Phrase 2 (optional)", max_chars=40)
-            w3 = st.text_input("Phrase 3 (optional)", max_chars=40)
+            w1 = st.text_input("1", max_chars=40, label_visibility="collapsed", placeholder="Phrase 1")
+            w2 = st.text_input("2", max_chars=40, label_visibility="collapsed", placeholder="Phrase 2")
+            w3 = st.text_input("3", max_chars=40, label_visibility="collapsed", placeholder="Phrase 3")
             posted = st.form_submit_button("Submit", width="stretch")
         if posted:
             phrases = [p.strip() for p in (w1, w2, w3) if (p or "").strip()]
@@ -1068,11 +1050,6 @@ def main() -> None:
     role = (st.query_params.get("role") or "").lower().strip()
     inject_theme(role)
     sb = get_backend()
-    if role != "player" and st.session_state.get("local_mode"):
-        st.info(
-            st.session_state.get("local_mode_reason")
-            or "Local SQLite play mode — no internet required."
-        )
 
     if role == "moderator":
         render_moderator(sb)
