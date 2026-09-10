@@ -65,7 +65,7 @@ GAME2_QUESTIONS: dict[int, str] = {
 }
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-HERO_IMAGE = ASSETS_DIR / "la_wui_smoke_2025.jpg"
+HERO_IMAGE = ASSETS_DIR / "la_wui_smoke_2025.png"
 
 GAMES_AND_RULES = """
 ### Games and Rules
@@ -130,9 +130,25 @@ def inject_theme(role: str) -> None:
             background-color: #F5F5F5 !important;
         }}
         [data-testid="stToolbar"], [data-testid="stDecoration"],
-        [data-testid="stStatusWidget"] {{
+        [data-testid="stStatusWidget"], [data-testid="stHeader"] {{
             visibility: hidden;
             height: 0;
+            pointer-events: none !important;
+        }}
+        [role="tooltip"],
+        [data-baseweb="tooltip"],
+        [data-baseweb="popover"],
+        [data-testid="stTooltipContent"],
+        [data-testid="stTooltip"] {{
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }}
+        iframe[title*="autorefresh"],
+        iframe[title*="streamlit_autorefresh"] {{
+            display: none !important;
+            height: 0 !important;
         }}
         [data-testid="stSidebar"] * {{
             font-size: 20px !important;
@@ -488,8 +504,11 @@ def player_join_url() -> str:
 
 
 def render_hero_image() -> None:
-    if HERO_IMAGE.exists():
-        st.image(str(HERO_IMAGE), width=440)
+    if not HERO_IMAGE.exists():
+        return
+    _left, mid, _right = st.columns([1, 2, 1])
+    with mid:
+        st.image(str(HERO_IMAGE), width="stretch")
         st.caption("NASA Earth Observatory, 9 January 2025.")
 
 
@@ -819,13 +838,13 @@ def render_moderator(sb: Backend) -> None:
     render_moderator_header(phase)
 
     if phase == "lobby":
+        render_hero_image()
         left, right = st.columns([1.05, 1.2])
         with left:
             join_url = player_join_url()
             render_qr(join_url, width=280)
             st.markdown(f'<div class="wui-join-url">{join_url}</div>', unsafe_allow_html=True)
         with right:
-            render_hero_image()
             render_rules("lobby")
         return
 
