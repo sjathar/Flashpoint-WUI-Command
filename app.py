@@ -368,6 +368,32 @@ def inject_theme(role: str) -> None:
         [data-testid="stTextInput"] input::placeholder {{
             color: #616161 !important;
             -webkit-text-fill-color: #616161 !important;
+            opacity: 1;
+        }}
+        [data-testid="stTextInput"] input::-webkit-input-placeholder {{
+            color: #616161 !important;
+            -webkit-text-fill-color: #616161 !important;
+            opacity: 1;
+        }}
+        [data-testid="stTextInput"] input:focus::placeholder {{
+            color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
+            opacity: 0 !important;
+        }}
+        [data-testid="stTextInput"] input:focus::-webkit-input-placeholder {{
+            color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
+            opacity: 0 !important;
+        }}
+        [data-testid="stTextInput"] input:not(:placeholder-shown)::placeholder {{
+            color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
+            opacity: 0 !important;
+        }}
+        [data-testid="stTextInput"] input:not(:placeholder-shown)::-webkit-input-placeholder {{
+            color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
+            opacity: 0 !important;
         }}
         div[data-testid="stAlert"] {{
             background-color: #FFF8F5 !important;
@@ -1093,7 +1119,7 @@ def render_moderator(sb: Backend) -> None:
             with photo:
                 render_hero_image()
             with code:
-                render_join(width=140)
+                render_join(width=210)
         with right:
             st.markdown('<div class="wui-rules-mark"></div>', unsafe_allow_html=True)
             render_rules("lobby")
@@ -1101,7 +1127,7 @@ def render_moderator(sb: Backend) -> None:
 
     main, side = st.columns([5.2, 1.15], gap="small")
     with side:
-        render_join(width=150)
+        render_join(width=225)
     with main:
         if phase == "game1":
             rows = fetch_interest(sb)
