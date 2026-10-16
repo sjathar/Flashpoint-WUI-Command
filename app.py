@@ -44,6 +44,7 @@ SESSION_TITLE = "AAAR 2026: WUI Smoke Impacts"
 APP_NAME = "WUI Interactive"
 GAME4_PROMPT = "What is the biggest bottleneck in managing WUI smoke impacts?"
 HANG_TIGHT = "The games will start soon. Hang tight..."
+SESSION_SHORT_URL = "https://tinyurl.com/wuiaaar2026"
 SHORT_URL_CACHE = Path(__file__).resolve().parent / "data" / "join_short.json"
 
 PHASE_TITLES = {
@@ -750,6 +751,8 @@ def cached_short_url(long_url: str) -> str:
     pinned = _secret_or_env("APP_SHORT_URL")
     if pinned and "YOUR_" not in pinned:
         return pinned
+    if SESSION_SHORT_URL:
+        return SESSION_SHORT_URL
     cached = _read_short_cache(long_url)
     if cached:
         return cached
