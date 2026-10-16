@@ -121,6 +121,7 @@ CONCEPTS = [
     "Indoor Filtration",
     "Defensible Space",
     "Risk Communication",
+    "Smoke Forecasting",
 ]
 MAPPER_PHASES = ("Before", "During", "After")
 
@@ -132,6 +133,7 @@ GAME3_QUESTIONS: dict[int, str] = {
     5: "Closing windows and running a portable HEPA filter can lower indoor smoke particles.",
     6: "A cloth mask protects against wildfire smoke as well as an N95 respirator.",
     7: "Once outdoor smoke clears, indoor smoke is gone too.",
+    8: "Wildfire smoke only harms people who already have lung or heart disease.",
 }
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -141,8 +143,8 @@ GAMES_AND_RULES = """
 ### Games and rules
 
 1. **Research interest** — Rate **8** WUI questions as **Low**, **Medium**, or **High** interest.
-2. **Before / During / After** — Map **7** tools to when they matter most.
-3. **Fact or Fiction** — Vote on **7** claims about WUI fire and smoke.
+2. **Before / During / After** — Map **8** tools to when they matter most.
+3. **Fact or Fiction** — Vote on **8** claims about WUI fire and smoke.
 4. **Bottlenecks** — One word for the biggest bottleneck. Hyphenated words are fine.
 """
 
@@ -926,7 +928,7 @@ def mapper_chart(rows: list[dict[str, Any]], *, compact: bool = False) -> go.Fig
     fig.update_layout(
         **layout,
         barmode="stack",
-        height=320 if compact else 520,
+        height=340 if compact else 560,
         xaxis_title="" if compact else "Votes",
         xaxis=dict(dtick=1, gridcolor="#EEEEEE", tickfont=dict(size=tick)),
         showlegend=True,
@@ -984,7 +986,7 @@ def trivia_chart(all_rows: list[dict[str, Any]], *, compact: bool = False) -> go
     fig.update_layout(
         **layout,
         barmode="stack",
-        height=320 if compact else 560,
+        height=360 if compact else 640,
         xaxis=dict(range=[0, 100], ticksuffix="%", dtick=25, tickfont=dict(size=tick)),
         showlegend=True,
     )
