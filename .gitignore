@@ -21,3 +21,4 @@ venv/
 # Local play database
 data/*.sqlite
 data/*.sqlite-*
+data/join_short.json

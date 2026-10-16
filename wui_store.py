@@ -183,7 +183,15 @@ class WuiLocalClient:
               id INTEGER PRIMARY KEY CHECK (id = 1),
               current_phase TEXT NOT NULL DEFAULT 'lobby',
               active_question INTEGER NOT NULL DEFAULT 1,
-              results_open INTEGER NOT NULL DEFAULT 0
+              results_open INTEGER NOT NULL DEFAULT 0,
+              revealed_phases TEXT NOT NULL DEFAULT '',
+              phase_timers TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS game1_interest (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              topic TEXT NOT NULL,
+              interest TEXT NOT NULL,
+              player_name TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS game1_mapper (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,6 +213,8 @@ class WuiLocalClient:
             """
         )
         self._ensure_column("app_state", "results_open", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("app_state", "revealed_phases", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("app_state", "phase_timers", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column("game1_mapper", "player_name", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("game2_trivia", "player_name", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("game3_cloud", "player_name", "TEXT NOT NULL DEFAULT ''")
