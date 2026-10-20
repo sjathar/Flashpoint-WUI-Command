@@ -174,7 +174,21 @@ class WuiLocalClient:
 
     def table(self, name: str) -> LocalQuery:
         self._check_ident(name)
+        if name == "session_players":
+            self._ensure_session_players()
         return LocalQuery(self, name)
+
+    def _ensure_session_players(self) -> None:
+        """Create the login table on this connection, including ones opened before it existed."""
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_players (
+              player_name TEXT PRIMARY KEY,
+              joined_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+            )
+            """
+        )
+        self.conn.commit()
 
     def _init_schema(self) -> None:
         self.conn.executescript(
@@ -258,4 +272,6 @@ def get_wui_client(path: Path | None = None) -> WuiLocalClient:
     if _CLIENT is None:
         db_path = path or Path(__file__).resolve().parent / "data" / "wui_interactive.sqlite"
         _CLIENT = WuiLocalClient(db_path)
+    else:
+        _CLIENT._init_schema()
     return _CLIENT

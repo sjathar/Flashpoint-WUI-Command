@@ -536,7 +536,7 @@ def _db_call(label: str, fn):
         return fn()
     except Exception as exc:
         msg = str(exc)
-        st.error(f"Database error while {label}: `{type(exc).__name__}`")
+        st.error(f"Database error while {label}: `{type(exc).__name__}: {exc}`")
         if "ProxyError" in type(exc).__name__ or "403" in msg:
             st.warning(
                 "Outbound requests to Supabase are being blocked by an HTTP proxy. "
