@@ -49,10 +49,10 @@ SHORT_URL_CACHE = Path(__file__).resolve().parent / "data" / "join_short.json"
 
 PHASE_TITLES = {
     "lobby": "Lobby — Join the session",
-    "game1": "Game 1 — Research interest",
-    "game2": "Game 2 — Before, During, After",
-    "game3": "Game 3 — Fact or Fiction",
-    "game4": "Game 4 — Bottlenecks",
+    "game1": "Game 1 — Before, During, After",
+    "game2": "Game 2 — Fact or Fiction",
+    "game3": "Game 3 — Bottlenecks",
+    "game4": "Game 4 — Research interest",
     "end": "Session close",
 }
 
@@ -142,34 +142,44 @@ HERO_IMAGE = ASSETS_DIR / "la_wui_smoke_2025.png"
 GAMES_AND_RULES = """
 ### Games and rules
 
-1. **Research interest** — Rate **8** WUI questions as **Low**, **Medium**, or **High** interest.
-2. **Before / During / After** — Map **8** tools to when they matter most.
-3. **Fact or Fiction** — Vote on **8** claims about WUI fire and smoke.
-4. **Bottlenecks** — One word for the biggest bottleneck. Hyphenated words are fine.
+1. **Before / During / After** — For each tool, select every moment it matters. More than one of **Before**, **During**, and **After** is allowed.
+2. **Fact or Fiction** — Vote on **8** claims about WUI fire and smoke.
+3. **Bottlenecks** — Up to **3** words, separated by commas, for the biggest bottleneck.
+4. **Research interest** — Rate **8** WUI questions as **Low**, **Medium**, or **High** interest.
 """
 
 GAME_RULES = {
     "game1": """
 ### Game 1 rules
 
-Rate each question **Low**, **Medium**, or **High**. One choice per question. The chart shows where the room wants the science to go.
+For each tool, select every moment it matters: **Before**, **During**, and/or **After**. You can choose more than one. The chart shows whether the room treats each tool as preparedness, emergency response, recovery, or a mix of those.
 """,
     "game2": """
 ### Game 2 rules
 
-Map each tool to **Before**, **During**, or **After**. One choice per tool. The pattern shows whether the room treats smoke as preparedness, emergency response, or recovery and health.
+Read each claim about WUI fire and smoke and vote **Fact** or **Fiction**. There are eight claims, and each one needs a vote. The split shows which ideas the room shares and which are still contested.
 """,
     "game3": """
 ### Game 3 rules
 
-Vote **Fact** or **Fiction** on each claim. The split shows which ideas are shared and which are still contested.
+Name the biggest bottleneck in managing WUI smoke impacts using up to three words, separated by commas. Each entry must be a single word, and a hyphenated word counts as one. The cloud colors words by theme, such as science, engineering, and communication.
 """,
     "game4": """
 ### Game 4 rules
 
-One word for the biggest bottleneck in managing WUI smoke impacts. A compound or hyphenated word is fine. The cloud shows whether the room points to science, operations, communication, or policy.
+Rate each of the eight research questions as **Low**, **Medium**, or **High** interest. Choose one level per question. The chart shows where the room wants the science to go.
 """,
 }
+
+THEME_COLORS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("Science", "#0D47A1", ("research", "data", "model", "forecast", "monitor", "science", "evidence")),
+    ("Engineering", "#1B5E20", ("filter", "retrofit", "building", "ventilation", "sensor", "design", "infrastructure")),
+    ("Communication", "#4A148C", ("warning", "alert", "message", "communication", "trust", "outreach")),
+    ("Health", "#880E4F", ("health", "exposure", "respiratory", "asthma", "hospital")),
+    ("Policy", "#1A237E", ("policy", "funding", "regulation", "code", "insurance", "standard")),
+    ("Operations", "#3E2723", ("response", "staffing", "coordination", "evacuation", "resource", "capacity")),
+]
+OTHER_THEME_COLOR = "#212121"
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -288,6 +298,25 @@ def inject_theme(role: str) -> None:
             font-size: 1.5rem !important;
             font-weight: 700;
             margin-bottom: 0.6rem;
+        }}
+        .wui-login {{
+            color: #E64A19;
+            font-size: 1.35rem !important;
+            font-weight: 800;
+            margin: 0 0 0.5rem 0;
+        }}
+        .wui-legend {{
+            font-size: 16px !important;
+            line-height: 1.8 !important;
+            margin: 0.35rem 0 0 0;
+        }}
+        .wui-swatch {{
+            display: inline-block;
+            width: 0.85rem;
+            height: 0.85rem;
+            margin-right: 0.35rem;
+            border-radius: 2px;
+            vertical-align: -0.05rem;
         }}
         .wui-card-title {{
             font-size: 1.25rem !important;
@@ -582,7 +611,7 @@ def fetch_interest(_sb: Backend) -> list[dict[str, Any]]:
             or []
         )
 
-    return _db_call("loading Game 1 votes", _run)
+    return _db_call("loading Game 4 votes", _run)
 
 
 @st.cache_data(ttl=1)
@@ -596,7 +625,7 @@ def fetch_mapper(_sb: Backend) -> list[dict[str, Any]]:
             or []
         )
 
-    return _db_call("loading Game 2 votes", _run)
+    return _db_call("loading Game 1 votes", _run)
 
 
 @st.cache_data(ttl=1)
@@ -610,7 +639,7 @@ def fetch_trivia(_sb: Backend) -> list[dict[str, Any]]:
             or []
         )
 
-    return _db_call("loading Game 3 votes", _run)
+    return _db_call("loading Game 2 votes", _run)
 
 
 @st.cache_data(ttl=1)
@@ -618,7 +647,32 @@ def fetch_cloud(_sb: Backend) -> list[dict[str, Any]]:
     def _run():
         return _sb.table("game3_cloud").select("word, player_name").execute().data or []
 
-    return _db_call("loading Game 4 words", _run)
+    return _db_call("loading Game 3 words", _run)
+
+
+@st.cache_data(ttl=1)
+def fetch_logged_in(_sb: Backend) -> int:
+    def _run():
+        return _sb.table("session_players").select("player_name").execute().data or []
+
+    rows = _db_call("counting logged-in players", _run)
+    names = {str(row.get("player_name") or "").strip() for row in rows}
+    names.discard("")
+    return len(names)
+
+
+def register_player(sb: Backend, player_name: str) -> None:
+    name = player_name.strip()
+    if not name:
+        return
+    existing = (
+        sb.table("session_players").select("player_name").eq("player_name", name).limit(1).execute().data
+        or []
+    )
+    if existing:
+        return
+    sb.table("session_players").insert({"player_name": name}).execute()
+    clear_caches()
 
 
 def clear_caches() -> None:
@@ -627,6 +681,7 @@ def clear_caches() -> None:
     fetch_mapper.clear()
     fetch_trivia.clear()
     fetch_cloud.clear()
+    fetch_logged_in.clear()
 
 
 def set_phase(sb: Backend, phase: str) -> None:
@@ -661,6 +716,7 @@ def reset_session(sb: Backend) -> None:
     sb.table("game1_mapper").delete().neq("concept", "").execute()
     sb.table("game2_trivia").delete().gte("question_id", 0).execute()
     sb.table("game3_cloud").delete().neq("word", "").execute()
+    sb.table("session_players").delete().neq("player_name", "").execute()
     sb.table("app_state").update(
         {
             "current_phase": "lobby",
@@ -694,6 +750,43 @@ def one_word(text: str) -> str | None:
     if not token or any(ch.isspace() for ch in token):
         return None
     return token
+
+
+def cloud_tokens(text: str) -> list[str] | None:
+    """Up to three single words, separated by commas. Hyphens are allowed."""
+    parts = [part.strip() for part in (text or "").split(",")]
+    parts = [part for part in parts if part]
+    if not parts or len(parts) > 3:
+        return None
+    words: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        token = one_word(part)
+        if token is None:
+            return None
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        words.append(token)
+    return words or None
+
+
+def word_theme_color(word: str) -> str:
+    token = word.lower().strip()
+    parts = [part for part in token.replace("_", "-").split("-") if part]
+    folded = token.replace("-", "").replace("_", "")
+    for _name, color, keywords in THEME_COLORS:
+        for keyword in keywords:
+            if (
+                token == keyword
+                or folded == keyword
+                or keyword in parts
+                or folded.startswith(keyword)
+                or any(part.startswith(keyword) for part in parts)
+            ):
+                return color
+    return OTHER_THEME_COLOR
 
 
 # ---------------------------------------------------------------------------
@@ -1007,7 +1100,9 @@ def cloud_png(words: tuple[str, ...], compact: bool = False) -> bytes | None:
         width=900 if compact else 1400,
         height=520 if compact else 700,
         background_color="#FFFFFF",
-        colormap="YlOrRd",
+        color_func=lambda word, font_size, position, orientation, random_state=None, **kwargs: word_theme_color(
+            word
+        ),
         max_words=80,
         collocations=False,
         prefer_horizontal=0.9,
@@ -1032,12 +1127,27 @@ def cloud_png(words: tuple[str, ...], compact: bool = False) -> bytes | None:
     return buf.getvalue()
 
 
+def render_theme_legend() -> None:
+    bits = [
+        f'<span><span class="wui-swatch" style="background:{color};"></span>{name}</span>'
+        for name, color, _keywords in THEME_COLORS
+    ]
+    bits.append(
+        f'<span><span class="wui-swatch" style="background:{OTHER_THEME_COLOR};"></span>Other</span>'
+    )
+    st.markdown(
+        f'<p class="wui-legend">{" &nbsp;&nbsp; ".join(bits)}</p>',
+        unsafe_allow_html=True,
+    )
+
+
 def show_cloud(words: list[str], *, compact: bool = False) -> None:
     png = cloud_png(tuple(words), compact)
     if png is None:
         st.info("No words yet.")
         return
     st.image(png, width="stretch")
+    render_theme_legend()
 
 
 def render_rules(phase: str = "lobby") -> None:
@@ -1051,13 +1161,19 @@ def render_rules(phase: str = "lobby") -> None:
 # Moderator
 # ---------------------------------------------------------------------------
 
-def render_moderator_header(phase: str) -> None:
+def render_login_count(n: int) -> None:
+    label = "person logged in" if n == 1 else "people logged in"
+    st.markdown(f'<p class="wui-login">{n} {label}</p>', unsafe_allow_html=True)
+
+
+def render_moderator_header(phase: str, logged_in: int) -> None:
     st.markdown(f'<div class="wui-kicker">{APP_NAME}</div>', unsafe_allow_html=True)
     st.markdown(f'<p class="wui-title">{SESSION_TITLE}</p>', unsafe_allow_html=True)
     st.markdown(
         f'<p class="wui-subtitle">{PHASE_TITLES.get(phase, phase)}</p>',
         unsafe_allow_html=True,
     )
+    render_login_count(logged_in)
 
 
 def render_phase_bar(sb: Backend, phase: str) -> None:
@@ -1091,13 +1207,15 @@ def render_collecting(sb: Backend, phase: str, n: int, unit: str) -> bool:
     if state["results_open"] or phase in state["revealed_phases"]:
         return True
     remaining = seconds_remaining(state["phase_timers"], phase)
-    if phase in state["phase_timers"] and remaining <= 0:
-        mark_game_revealed(sb, phase)
-        st.rerun()
     render_timer(remaining)
     render_rules(phase)
     label = unit if n == 1 else f"{unit}s"
-    st.info(f"Collecting responses. **{n}** {label} so far.")
+    if phase in state["phase_timers"] and remaining <= 0:
+        st.info(
+            f"Time is up. Still collecting responses until you reveal results. **{n}** {label} so far."
+        )
+    else:
+        st.info(f"Collecting responses. **{n}** {label} so far.")
     if st.button("Reveal results", width="stretch", type="primary", key=f"reveal_{phase}"):
         mark_game_revealed(sb, phase)
         st.rerun()
@@ -1111,7 +1229,8 @@ def render_moderator(sb: Backend) -> None:
     clear_caches()
     state = fetch_app_state(sb)
     phase = state["current_phase"]
-    render_moderator_header(phase)
+    logged_in = fetch_logged_in(sb)
+    render_moderator_header(phase, logged_in)
     render_phase_bar(sb, phase)
 
     if phase == "lobby":
@@ -1124,6 +1243,7 @@ def render_moderator(sb: Backend) -> None:
                 render_join(width=210)
         with right:
             st.markdown('<div class="wui-rules-mark"></div>', unsafe_allow_html=True)
+            render_login_count(logged_in)
             render_rules("lobby")
         return
 
@@ -1132,26 +1252,26 @@ def render_moderator(sb: Backend) -> None:
         render_join(width=225)
     with main:
         if phase == "game1":
-            rows = fetch_interest(sb)
-            if render_collecting(sb, phase, count_players(rows), "player"):
-                st.plotly_chart(interest_chart(rows), width="stretch", theme=None)
-                st.write(f"**{count_players(rows)}** players submitted.")
-        elif phase == "game2":
             rows = fetch_mapper(sb)
             if render_collecting(sb, phase, count_players(rows), "player"):
                 st.plotly_chart(mapper_chart(rows), width="stretch", theme=None)
                 st.write(f"**{count_players(rows)}** players submitted.")
-        elif phase == "game3":
+        elif phase == "game2":
             rows = fetch_trivia(sb)
             if render_collecting(sb, phase, count_players(rows), "player"):
                 st.plotly_chart(trivia_chart(rows), width="stretch", theme=None)
                 st.write(f"**{count_players(rows)}** players submitted.")
-        elif phase == "game4":
+        elif phase == "game3":
             rows = fetch_cloud(sb)
             words = cloud_words(rows)
-            if render_collecting(sb, phase, count_players(rows), "word"):
+            if render_collecting(sb, phase, count_players(rows), "player"):
                 show_cloud(words)
                 st.caption("1 word" if len(words) == 1 else f"{len(words)} words")
+        elif phase == "game4":
+            rows = fetch_interest(sb)
+            if render_collecting(sb, phase, count_players(rows), "player"):
+                st.plotly_chart(interest_chart(rows), width="stretch", theme=None)
+                st.write(f"**{count_players(rows)}** players submitted.")
         else:
             render_full_summary(sb)
 
@@ -1160,32 +1280,32 @@ def render_full_summary(sb: Backend) -> None:
     top_left, top_right = st.columns(2, gap="small")
     bottom_left, bottom_right = st.columns(2, gap="small")
     with top_left:
-        st.markdown("**Game 1 — Research interest**")
-        st.plotly_chart(
-            interest_chart(fetch_interest(sb), compact=True),
-            width="stretch",
-            theme=None,
-            config={"displayModeBar": False},
-        )
-    with top_right:
-        st.markdown("**Game 2 — Before / During / After**")
+        st.markdown("**Game 1 — Before / During / After**")
         st.plotly_chart(
             mapper_chart(fetch_mapper(sb), compact=True),
             width="stretch",
             theme=None,
             config={"displayModeBar": False},
         )
-    with bottom_left:
-        st.markdown("**Game 3 — Fact or Fiction**")
+    with top_right:
+        st.markdown("**Game 2 — Fact or Fiction**")
         st.plotly_chart(
             trivia_chart(fetch_trivia(sb), compact=True),
             width="stretch",
             theme=None,
             config={"displayModeBar": False},
         )
-    with bottom_right:
-        st.markdown("**Game 4 — Bottlenecks**")
+    with bottom_left:
+        st.markdown("**Game 3 — Bottlenecks**")
         show_cloud(cloud_words(fetch_cloud(sb)), compact=True)
+    with bottom_right:
+        st.markdown("**Game 4 — Research interest**")
+        st.plotly_chart(
+            interest_chart(fetch_interest(sb), compact=True),
+            width="stretch",
+            theme=None,
+            config={"displayModeBar": False},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1220,11 +1340,14 @@ def render_choice_cards(
     items: list[tuple[str, str, str]],
     key_prefix: str,
     options: tuple[str, ...],
-) -> dict[str, str | None]:
-    answers: dict[str, str | None] = {}
+    *,
+    multi: bool = False,
+) -> dict[str, Any]:
+    answers: dict[str, Any] = {}
     for item_id, title, body in items:
         key = f"{key_prefix}_{item_id}"
         current = st.session_state.get(key)
+        selected = [option for option in options if isinstance(current, list) and option in current]
         with st.container(border=True):
             st.markdown(f'<p class="wui-card-title">{title}</p>', unsafe_allow_html=True)
             if body:
@@ -1232,15 +1355,27 @@ def render_choice_cards(
             columns = st.columns(len(options))
             for column, option in zip(columns, options):
                 with column:
+                    active = option in selected if multi else current == option
                     if st.button(
                         option,
                         key=f"{key}_btn_{option}",
-                        type="primary" if current == option else "secondary",
+                        type="primary" if active else "secondary",
                         width="stretch",
                     ):
-                        st.session_state[key] = option
+                        if multi:
+                            if option in selected:
+                                st.session_state[key] = [item for item in selected if item != option]
+                            else:
+                                st.session_state[key] = [
+                                    item for item in options if item in selected or item == option
+                                ]
+                        else:
+                            st.session_state[key] = option
                         st.rerun()
-        answers[item_id] = current if current in options else None
+        if multi:
+            answers[item_id] = selected
+        else:
+            answers[item_id] = current if current in options else None
     return answers
 
 
@@ -1281,6 +1416,7 @@ def render_player(sb: Backend) -> None:
     if phase == "lobby":
         name = ensure_player_name()
         if name:
+            register_player(sb, name)
             st.success(HANG_TIGHT)
         return
 
@@ -1291,37 +1427,15 @@ def render_player(sb: Backend) -> None:
     player_name = ensure_player_name()
     if not player_name:
         return
+    register_player(sb, player_name)
+    render_rules(phase)
 
     if phase == "game1":
         answers = render_choice_cards(
-            [(topic_id, label, prompt) for topic_id, label, prompt in INTEREST_TOPICS],
-            "g1",
-            INTEREST_LEVELS,
-        )
-
-        def save() -> None:
-            replace_player_rows(
-                sb,
-                "game1_interest",
-                player_name,
-                [
-                    {
-                        "topic": label,
-                        "interest": answers[topic_id],
-                        "player_name": player_name,
-                    }
-                    for topic_id, label, _prompt in INTEREST_TOPICS
-                ],
-            )
-
-        submit_page(answers, "Choose Low, Medium, or High for every question.", save)
-        return
-
-    if phase == "game2":
-        answers = render_choice_cards(
             [(concept, concept, "") for concept in CONCEPTS],
-            "g2",
+            "g1",
             MAPPER_PHASES,
+            multi=True,
         )
 
         def save() -> None:
@@ -1332,20 +1446,21 @@ def render_player(sb: Backend) -> None:
                 [
                     {
                         "concept": concept,
-                        "assigned_phase": answers[concept],
+                        "assigned_phase": assigned,
                         "player_name": player_name,
                     }
                     for concept in CONCEPTS
+                    for assigned in answers[concept]
                 ],
             )
 
-        submit_page(answers, "Choose Before, During, or After for every tool.", save)
+        submit_page(answers, "Choose at least one of Before, During, or After for every tool.", save)
         return
 
-    if phase == "game3":
+    if phase == "game2":
         answers = render_choice_cards(
             [(str(qnum), text, "") for qnum, text in GAME3_QUESTIONS.items()],
-            "g3",
+            "g2",
             ("Fact", "Fiction"),
         )
 
@@ -1367,32 +1482,61 @@ def render_player(sb: Backend) -> None:
         submit_page(answers, "Choose Fact or Fiction for every claim.", save)
         return
 
-    if phase == "game4":
+    if phase == "game3":
         st.markdown(f'<p class="wui-card-title">{GAME4_PROMPT}</p>', unsafe_allow_html=True)
-        st.caption("One word. Hyphenated words are fine.")
-        with st.form("game4_form"):
+        st.caption("Up to 3 words, separated by commas. A hyphenated word counts as one.")
+        with st.form("game3_form"):
             raw = st.text_input(
-                "Word",
-                max_chars=40,
+                "Words",
+                max_chars=80,
                 label_visibility="collapsed",
-                placeholder="One word",
-                key="g4_word",
+                placeholder="word, word, word",
+                key="g3_words",
             )
             posted = st.form_submit_button("Submit", width="stretch")
         if posted:
-            token = one_word(raw)
-            if token is None:
-                st.session_state["wui_warn"] = "Enter one word. A hyphenated word is fine."
+            tokens = cloud_tokens(raw)
+            if tokens is None:
+                st.session_state["wui_warn"] = (
+                    "Enter up to 3 words, separated by commas. Each one must be a single word. "
+                    "A hyphenated word is fine."
+                )
                 st.rerun()
             replace_player_rows(
                 sb,
                 "game3_cloud",
                 player_name,
-                [{"word": token, "player_name": player_name}],
+                [{"word": token, "player_name": player_name} for token in tokens],
             )
             st.session_state["wui_submitted_lock"] = phase
             clear_caches()
             st.rerun()
+        return
+
+    if phase == "game4":
+        answers = render_choice_cards(
+            [(topic_id, label, prompt) for topic_id, label, prompt in INTEREST_TOPICS],
+            "g4",
+            INTEREST_LEVELS,
+        )
+
+        def save() -> None:
+            replace_player_rows(
+                sb,
+                "game1_interest",
+                player_name,
+                [
+                    {
+                        "topic": label,
+                        "interest": answers[topic_id],
+                        "player_name": player_name,
+                    }
+                    for topic_id, label, _prompt in INTEREST_TOPICS
+                ],
+            )
+
+        submit_page(answers, "Choose Low, Medium, or High for every question.", save)
+        return
 
 
 # ---------------------------------------------------------------------------

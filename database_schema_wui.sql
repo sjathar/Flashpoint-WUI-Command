@@ -58,17 +58,24 @@ create table if not exists public.game3_cloud (
 
 alter table public.game3_cloud add column if not exists player_name text not null default '';
 
+create table if not exists public.session_players (
+  player_name  text primary key,
+  joined_at    timestamptz not null default now()
+);
+
 alter table public.app_state enable row level security;
 alter table public.game1_interest enable row level security;
 alter table public.game1_mapper enable row level security;
 alter table public.game2_trivia enable row level security;
 alter table public.game3_cloud enable row level security;
+alter table public.session_players enable row level security;
 
 drop policy if exists "anon all app_state" on public.app_state;
 drop policy if exists "anon all game1_interest" on public.game1_interest;
 drop policy if exists "anon all game1_mapper" on public.game1_mapper;
 drop policy if exists "anon all game2_trivia" on public.game2_trivia;
 drop policy if exists "anon all game3_cloud" on public.game3_cloud;
+drop policy if exists "anon all session_players" on public.session_players;
 
 create policy "anon all app_state" on public.app_state
   for all to anon, authenticated using (true) with check (true);
@@ -80,7 +87,10 @@ create policy "anon all game2_trivia" on public.game2_trivia
   for all to anon, authenticated using (true) with check (true);
 create policy "anon all game3_cloud" on public.game3_cloud
   for all to anon, authenticated using (true) with check (true);
+create policy "anon all session_players" on public.session_players
+  for all to anon, authenticated using (true) with check (true);
 
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on public.app_state, public.game1_interest,
-  public.game1_mapper, public.game2_trivia, public.game3_cloud to anon, authenticated;
+  public.game1_mapper, public.game2_trivia, public.game3_cloud, public.session_players
+  to anon, authenticated;

@@ -210,6 +210,10 @@ class WuiLocalClient:
               word TEXT NOT NULL,
               player_name TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS session_players (
+              player_name TEXT PRIMARY KEY,
+              joined_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+            );
             """
         )
         self._ensure_column("app_state", "results_open", "INTEGER NOT NULL DEFAULT 0")
