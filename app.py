@@ -999,10 +999,14 @@ def mapper_chart(rows: list[dict[str, Any]], *, compact: bool = False) -> go.Fig
             counts[concept][phase] += 1
 
     colors = {"Before": "#2E7D32", "During": "#FF5722", "After": "#9E9E9E"}
+    # Stacked bars reverse the legend. Rank After lowest so the reversed
+    # legend still reads Before, During, After.
+    legend_rank = {"Before": 3, "During": 2, "After": 1}
     fig = go.Figure(
         data=[
             go.Bar(
                 name=phase,
+                legendrank=legend_rank[phase],
                 y=CONCEPTS,
                 x=[counts[c][phase] for c in CONCEPTS],
                 orientation="h",
