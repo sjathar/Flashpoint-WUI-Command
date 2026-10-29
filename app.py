@@ -119,9 +119,6 @@ CONCEPTS = [
     "Health Studies",
     "Prescribed Burns",
     "Indoor Filtration",
-    "Defensible Space",
-    "Risk Communication",
-    "Smoke Forecasting",
 ]
 MAPPER_PHASES = ("Before", "During", "After")
 
@@ -131,9 +128,6 @@ GAME3_QUESTIONS: dict[int, str] = {
     3: "Prescribed fire always means less smoke for nearby communities.",
     4: "Air-quality alerts reach every household in a WUI community within 10 minutes.",
     5: "Closing windows and running a portable HEPA filter can lower indoor smoke particles.",
-    6: "A cloth mask protects against wildfire smoke as well as an N95 respirator.",
-    7: "Once outdoor smoke clears, indoor smoke is gone too.",
-    8: "Wildfire smoke only harms people who already have lung or heart disease.",
 }
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -143,7 +137,7 @@ GAMES_AND_RULES = """
 ### Games and rules
 
 1. **Before / During / After** — For each tool, select every moment it matters. More than one of **Before**, **During**, and **After** is allowed.
-2. **Fact or Fiction** — Vote on **8** claims about WUI fire and smoke.
+2. **Fact or Fiction** — Vote on **5** claims about WUI fire and smoke.
 3. **Bottlenecks** — Up to **3** words, separated by commas, for the biggest bottleneck.
 4. **Panel topics** — Rate the priority (low, medium, or high) of the following panel topics to help us determine tonight's discussion agenda.
 """
@@ -157,7 +151,7 @@ For each tool, select every moment it matters: **Before**, **During**, and/or **
     "game2": """
 ### Game 2 rules
 
-Read each claim about WUI fire and smoke and vote **Fact** or **Fiction**. There are eight claims, and each one needs a vote. The split shows which ideas the room shares and which are still contested.
+Read each claim about WUI fire and smoke and vote **Fact** or **Fiction**. There are five claims, and each one needs a vote. The split shows which ideas the room shares and which are still contested.
 """,
     "game3": """
 ### Game 3 rules
