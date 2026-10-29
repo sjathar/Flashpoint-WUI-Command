@@ -52,7 +52,7 @@ PHASE_TITLES = {
     "game1": "Game 1 — Before, During, After",
     "game2": "Game 2 — Fact or Fiction",
     "game3": "Game 3 — Bottlenecks",
-    "game4": "Game 4 — Research interest",
+    "game4": "Game 4 — Panel topics",
     "end": "Session close",
 }
 
@@ -145,7 +145,7 @@ GAMES_AND_RULES = """
 1. **Before / During / After** — For each tool, select every moment it matters. More than one of **Before**, **During**, and **After** is allowed.
 2. **Fact or Fiction** — Vote on **8** claims about WUI fire and smoke.
 3. **Bottlenecks** — Up to **3** words, separated by commas, for the biggest bottleneck.
-4. **Research interest** — Rate **8** WUI questions as **Low**, **Medium**, or **High** interest.
+4. **Panel topics** — Rate the priority (low, medium, or high) of the following panel topics to help us determine tonight's discussion agenda.
 """
 
 GAME_RULES = {
@@ -167,7 +167,7 @@ Name the biggest bottleneck in managing WUI smoke impacts using up to three word
     "game4": """
 ### Game 4 rules
 
-Rate each of the eight research questions as **Low**, **Medium**, or **High** interest. Choose one level per question. The chart shows where the room wants the science to go.
+Rate the priority (low, medium, or high) of the following panel topics to help us determine tonight's discussion agenda.
 """,
 }
 
@@ -1299,7 +1299,7 @@ def render_full_summary(sb: Backend) -> None:
         st.markdown("**Game 3 — Bottlenecks**")
         show_cloud(cloud_words(fetch_cloud(sb)), compact=True)
     with bottom_right:
-        st.markdown("**Game 4 — Research interest**")
+        st.markdown("**Game 4 — Panel topics**")
         st.plotly_chart(
             interest_chart(fetch_interest(sb), compact=True),
             width="stretch",
@@ -1535,7 +1535,7 @@ def render_player(sb: Backend) -> None:
                 ],
             )
 
-        submit_page(answers, "Choose Low, Medium, or High for every question.", save)
+        submit_page(answers, "Choose low, medium, or high for every panel topic.", save)
         return
 
 
