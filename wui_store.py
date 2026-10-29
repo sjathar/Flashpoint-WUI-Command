@@ -163,8 +163,10 @@ class WuiLocalClient:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        self.conn = sqlite3.connect(str(path), check_same_thread=False)
+        self.conn = sqlite3.connect(str(path), check_same_thread=False, timeout=5)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self._players_ready = False
         self._init_schema()
 
     @staticmethod
@@ -179,18 +181,28 @@ class WuiLocalClient:
         return LocalQuery(self, name)
 
     def _ensure_session_players(self) -> None:
-        """Create the login table on this connection, including ones opened before it existed."""
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS session_players (
-              player_name TEXT PRIMARY KEY,
-              joined_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+        """Create the login table once, including connections opened before it existed."""
+        if self._players_ready:
+            return
+        with _LOCK:
+            if self._players_ready:
+                return
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_players (
+                  player_name TEXT PRIMARY KEY,
+                  joined_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+                )
+                """
             )
-            """
-        )
-        self.conn.commit()
+            self.conn.commit()
+            self._players_ready = True
 
     def _init_schema(self) -> None:
+        with _LOCK:
+            self._init_schema_locked()
+
+    def _init_schema_locked(self) -> None:
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS app_state (
@@ -245,14 +257,24 @@ class WuiLocalClient:
                 """
             )
         self.conn.commit()
+        self._players_ready = True
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
         self._check_ident(table)
         self._check_ident(column)
         info = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
-        names = {row["name"] for row in info}
+        names = set()
+        for row in info:
+            try:
+                names.add(row["name"])
+            except (IndexError, KeyError, TypeError):
+                continue
         if column not in names:
-            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
@@ -269,9 +291,8 @@ def _to_sql_value(value: Any) -> Any:
 
 def get_wui_client(path: Path | None = None) -> WuiLocalClient:
     global _CLIENT
-    if _CLIENT is None:
-        db_path = path or Path(__file__).resolve().parent / "data" / "wui_interactive.sqlite"
-        _CLIENT = WuiLocalClient(db_path)
-    else:
-        _CLIENT._init_schema()
-    return _CLIENT
+    with _LOCK:
+        if _CLIENT is None:
+            db_path = path or Path(__file__).resolve().parent / "data" / "wui_interactive.sqlite"
+            _CLIENT = WuiLocalClient(db_path)
+        return _CLIENT
