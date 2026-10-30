@@ -146,12 +146,12 @@ GAME_RULES = {
     "game1": """
 ### Game 1 rules
 
-For each tool, select every moment it matters: **Before**, **During**, and/or **After**. You can choose more than one. The chart shows whether the room treats each tool as preparedness, emergency response, recovery, or a mix of those.
+For each tool, select every moment it matters: **Before**, **During**, and/or **After**. You can choose more than one, and you can leave a tool blank. The chart shows whether the room treats each tool as preparedness, emergency response, recovery, or a mix of those.
 """,
     "game2": """
 ### Game 2 rules
 
-Read each claim about WUI fire and smoke and vote **Fact** or **Fiction**. There are five claims, and each one needs a vote. The split shows which ideas the room shares and which are still contested.
+Read each claim about WUI fire and smoke and vote **Fact** or **Fiction**. You can skip a claim. The split shows which ideas the room shares and which are still contested.
 """,
     "game3": """
 ### Game 3 rules
@@ -161,7 +161,7 @@ Name the biggest bottleneck in managing WUI smoke impacts using up to three word
     "game4": """
 ### Game 4 rules
 
-Rate the priority (low, medium, or high) of the following panel topics to help us determine tonight's discussion agenda.
+Rate the priority (low, medium, or high) of the following panel topics to help us determine tonight's discussion agenda. You can skip a topic.
 """,
 }
 
@@ -1377,16 +1377,12 @@ def render_choice_cards(
     return answers
 
 
-def submit_page(
-    answers: dict[str, str | None],
-    warning: str,
-    save,
-) -> None:
+def submit_page(answers: dict[str, Any], save) -> None:
     answered = sum(1 for value in answers.values() if value)
     st.write(f"**{answered} of {len(answers)}** answered")
     if st.button("Submit", width="stretch", type="primary", key="submit_page"):
-        if answered < len(answers):
-            st.session_state["wui_warn"] = warning
+        if answered < 1:
+            st.session_state["wui_warn"] = "Answer at least one before submitting."
             st.rerun()
         save()
         st.session_state["wui_submitted_lock"] = st.session_state.get("_answer_phase")
@@ -1452,7 +1448,7 @@ def render_player(sb: Backend) -> None:
                 ],
             )
 
-        submit_page(answers, "Choose at least one of Before, During, or After for every tool.", save)
+        submit_page(answers, save)
         return
 
     if phase == "game2":
@@ -1474,10 +1470,11 @@ def render_player(sb: Backend) -> None:
                         "player_name": player_name,
                     }
                     for qnum in GAME3_QUESTIONS
+                    if answers[str(qnum)]
                 ],
             )
 
-        submit_page(answers, "Choose Fact or Fiction for every claim.", save)
+        submit_page(answers, save)
         return
 
     if phase == "game3":
@@ -1530,10 +1527,11 @@ def render_player(sb: Backend) -> None:
                         "player_name": player_name,
                     }
                     for topic_id, label, _prompt in INTEREST_TOPICS
+                    if answers[topic_id]
                 ],
             )
 
-        submit_page(answers, "Choose low, medium, or high for every panel topic.", save)
+        submit_page(answers, save)
         return
 
 
